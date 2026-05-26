@@ -282,13 +282,79 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
   const transcript = interaction.options.getString('text', true).trim();
   const ttsEnabled = interaction.options.getString('tts', true) === 'on';
   const startedAt = Date.now();
+  let ttsFinalStatus = ttsEnabled ? `Played via ${formatTtsProvider(session.ttsProvider)}` : 'Off';
 
   if (!transcript) {
     await interaction.editReply('Please provide some text for `/debugtext`.');
     return;
   }
 
+  const buildDebugEmbed = (options: {
+    title: string;
+    color: number;
+    status: string;
+    reply?: string;
+    responseId?: string | null;
+    ttsStatus?: string;
+    latencyMs?: number;
+  }) => new EmbedBuilder()
+    .setTitle(options.title)
+    .setColor(options.color)
+    .addFields(
+      {
+        name: 'Status',
+        value: options.status,
+        inline: false,
+      },
+      {
+        name: 'You sent',
+        value: fitEmbedFieldValue(transcript),
+        inline: false,
+      },
+      ...(options.reply
+        ? [{
+            name: 'Hermes replied',
+            value: fitEmbedFieldValue(options.reply),
+            inline: false,
+          }]
+        : []),
+      {
+        name: 'TTS playback',
+        value: options.ttsStatus ?? (ttsEnabled ? `Pending via ${formatTtsProvider(session.ttsProvider)}` : 'Off'),
+        inline: false,
+      },
+      {
+        name: 'Session key',
+        value: summarizeSessionKey(session.sessionKey),
+        inline: false,
+      },
+      {
+        name: 'Session id',
+        value: summarizeSessionId(options.responseId ?? session.hermesResponseId),
+        inline: false,
+      },
+      ...(typeof options.latencyMs === 'number'
+        ? [{
+            name: 'Latency',
+            value: formatLatency(options.latencyMs),
+            inline: false,
+          }]
+        : []),
+    )
+    .setFooter({ text: 'Debug text only affects this one command call.' });
+
   try {
+    await interaction.editReply({
+      embeds: [
+        buildDebugEmbed({
+          title: 'Debug text running',
+          color: 0x5865f2,
+          status: 'Hermes is preparing a reply.',
+          ttsStatus: ttsEnabled ? `Waiting for Hermes, then ${formatTtsProvider(session.ttsProvider)} playback.` : 'Off',
+        }),
+      ],
+    });
+
     const hermesResult = await runHermesTurnWithOptionalVerbose({
       guildId,
       guild: interaction.guild,
@@ -297,22 +363,61 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
       logPrefix: '[debugtext]',
     });
 
+    await interaction.editReply({
+      embeds: [
+        buildDebugEmbed({
+          title: ttsEnabled ? 'Debug text reply ready' : 'Debug text complete',
+          color: ttsEnabled ? 0x5865f2 : 0x57f287,
+          status: ttsEnabled ? 'Hermes replied. Preparing speech audio now.' : 'Hermes replied.',
+          reply: hermesResult.reply,
+          responseId: hermesResult.responseId,
+          ttsStatus: ttsEnabled ? `Preparing via ${formatTtsProvider(session.ttsProvider)}` : 'Off',
+          latencyMs: ttsEnabled ? undefined : Date.now() - startedAt,
+        }),
+      ],
+    });
+
     if (ttsEnabled) {
       const connection = getVoiceConnection(guildId);
       if (!connection) {
-        await interaction.editReply('TTS is set to `on`, but the bot is not connected to voice right now. Run `/join` first or use `tts: off`.');
-        return;
-      }
-
-      const tmpDir = createRequestTempDir();
-      try {
-        const ttsPath = path.join(tmpDir, `reply.${getTtsOutputExtensionForProvider(session.ttsProvider)}`);
-        await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider);
-        setVoiceSessionBotSpeaking(guildId, true);
-        await playAudioFile(connection, ttsPath);
-      } finally {
-        setVoiceSessionBotSpeaking(guildId, false);
-        await removeRequestTempDir(tmpDir);
+        ttsFinalStatus = 'Skipped because the bot is not connected to voice.';
+        await interaction.editReply({
+          embeds: [
+            buildDebugEmbed({
+              title: 'Debug text complete',
+              color: 0xfee75c,
+              status: 'Hermes replied, but the bot is not connected to voice.',
+              reply: hermesResult.reply,
+              responseId: hermesResult.responseId,
+              ttsStatus: 'Skipped because the bot is not connected to voice.',
+              latencyMs: Date.now() - startedAt,
+            }),
+          ],
+        });
+      } else {
+        const tmpDir = createRequestTempDir();
+        try {
+          const ttsPath = path.join(tmpDir, `reply.${getTtsOutputExtensionForProvider(session.ttsProvider)}`);
+          await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider);
+          await interaction.editReply({
+            embeds: [
+              buildDebugEmbed({
+                title: 'Debug text speaking',
+                color: 0x5865f2,
+                status: 'Playing the Hermes reply in voice.',
+                reply: hermesResult.reply,
+                responseId: hermesResult.responseId,
+                ttsStatus: `Playing via ${formatTtsProvider(session.ttsProvider)}`,
+              }),
+            ],
+          });
+          setVoiceSessionBotSpeaking(guildId, true);
+          await playAudioFile(connection, ttsPath);
+          ttsFinalStatus = `Played via ${formatTtsProvider(session.ttsProvider)}`;
+        } finally {
+          setVoiceSessionBotSpeaking(guildId, false);
+          await removeRequestTempDir(tmpDir);
+        }
       }
     }
 
@@ -322,46 +427,19 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
       hermesResponseId: hermesResult.responseId,
     });
 
-    const replyEmbed = new EmbedBuilder()
-      .setTitle('Debug text complete')
-      .setColor(0x57f287)
-      .addFields(
-        {
-          name: 'You sent',
-          value: fitEmbedFieldValue(transcript),
-          inline: false,
-        },
-        {
-          name: 'Hermes replied',
-          value: fitEmbedFieldValue(hermesResult.reply),
-          inline: false,
-        },
-        {
-          name: 'TTS playback',
-          value: ttsEnabled
-            ? `On via ${formatTtsProvider(session.ttsProvider)}`
-            : 'Off',
-          inline: false,
-        },
-        {
-          name: 'Session key',
-          value: summarizeSessionKey(hermesResult.sessionKey),
-          inline: false,
-        },
-        {
-          name: 'Session id',
-          value: summarizeSessionId(hermesResult.responseId),
-          inline: false,
-        },
-        {
-          name: 'Latency',
-          value: formatLatency(Date.now() - startedAt),
-          inline: false,
-        },
-      )
-      .setFooter({ text: 'Debug text only affects this one command call.' });
-
-    await interaction.editReply({ embeds: [replyEmbed] });
+    await interaction.editReply({
+      embeds: [
+        buildDebugEmbed({
+          title: 'Debug text complete',
+          color: 0x57f287,
+          status: 'Completed.',
+          reply: hermesResult.reply,
+          responseId: hermesResult.responseId,
+          ttsStatus: ttsFinalStatus,
+          latencyMs: Date.now() - startedAt,
+        }),
+      ],
+    });
   } catch (error) {
     await interaction.editReply({ content: `Processing failed: ${formatPipelineError(error)}` });
   }
