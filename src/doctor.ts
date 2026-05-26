@@ -1,5 +1,6 @@
 import dotenv from 'dotenv';
-import { checkDiscordBotAuth, collectBridgeHealth } from './diagnostics.js';
+import { spawnSync } from 'node:child_process';
+import { checkDiscordBotAuth, collectBridgeHealth, collectHermesApiHealth } from './diagnostics.js';
 
 dotenv.config({ override: true, quiet: true });
 
@@ -18,6 +19,23 @@ function printSection(title: string, rows: DoctorRow[]) {
       console.log(`       ${row.detail}`);
     }
   }
+}
+
+function getHermesTransport(): string {
+  const configured = process.env.HERMES_TRANSPORT?.trim().toLowerCase();
+  return configured === 'api' ? 'api' : 'cli';
+}
+
+function checkHermesCli(): DoctorRow {
+  const cli = process.env.HERMES_CLI?.trim() || 'hermes';
+  const result = spawnSync(cli, ['version'], { encoding: 'utf8' });
+  const output = `${result.stdout || ''}${result.stderr || ''}`.trim();
+
+  return {
+    label: 'Hermes CLI',
+    ok: result.status === 0,
+    detail: result.status === 0 ? output.split('\n')[0] || cli : output || `failed to run ${cli} version`,
+  };
 }
 
 async function main() {
@@ -50,10 +68,25 @@ async function main() {
       detail: discordAuth.ok ? 'succeeded' : discordAuth.detail,
     },
   ];
+  const hermesApi = await collectHermesApiHealth(process.env);
+  const hermesRows: DoctorRow[] = [
+    {
+      label: 'Transport',
+      ok: true,
+      detail: getHermesTransport(),
+    },
+    checkHermesCli(),
+    ...(hermesApi ? [{
+      label: hermesApi.name,
+      ok: hermesApi.ok,
+      detail: hermesApi.detail,
+    }] : []),
+  ];
 
   console.log('Hermes-Discord-Voice Doctor');
   console.log('==============================');
   printSection('Environment', envRows);
+  printSection('Hermes', hermesRows);
   printSection('Binaries', binaryRows);
   printSection('Assets', assetRows);
   printSection('Discord', discordRows);
@@ -62,6 +95,7 @@ async function main() {
     health.env.some((item) => !item.ok) ||
     health.binaries.some((item) => !item.ok) ||
     !health.whisperModel.ok ||
+    hermesRows.some((item) => !item.ok) ||
     !discordAuth.ok;
 
   console.log(`\nSummary: ${hasFailures ? 'FAILURES DETECTED' : 'ALL CHECKS PASSED'}`);
