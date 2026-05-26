@@ -31,12 +31,52 @@ export type ListenExecutionContext = {
   requestUserId: string;
   connection: VoiceConnection;
   session: VoiceSessionState;
+  playbackSignal?: AbortSignal;
+  preparePlayback?: () => AbortSignal | undefined;
+  finishPlayback?: () => void;
   startNotice?: () => Promise<void>;
+  progressReply?: (payload: { embed?: EmbedBuilder; content?: string }) => Promise<void>;
   finishReply: (payload: { embed?: EmbedBuilder; content?: string }) => Promise<void>;
 };
 
+type ListenStatusStage = 'capturing' | 'transcribing' | 'thinking' | 'synthesizing' | 'playing' | 'interrupted' | 'complete';
+
+function buildListenStatusEmbed(options: {
+  stage: ListenStatusStage;
+  transcript?: string;
+  reply?: string;
+  sessionKey: string;
+  responseId?: string | null;
+  latencyMs?: number;
+}) {
+  const labels: Record<ListenStatusStage, { title: string; color: number; status: string }> = {
+    capturing: { title: 'Listening now', color: 0x5865f2, status: 'Listening for speech. Capture ends after silence.' },
+    transcribing: { title: 'Transcribing', color: 0x5865f2, status: 'Captured audio. Whisper is transcribing it now.' },
+    thinking: { title: 'Hermes is thinking', color: 0x5865f2, status: 'Transcript is ready. Hermes is preparing a reply.' },
+    synthesizing: { title: 'Preparing voice', color: 0x5865f2, status: 'Hermes replied. Creating speech audio now.' },
+    playing: { title: 'Speaking now', color: 0x5865f2, status: 'Playing the Hermes reply in voice.' },
+    interrupted: { title: 'Turn interrupted', color: 0xfee75c, status: 'Playback was stopped by an interrupt.' },
+    complete: { title: 'Turn complete', color: 0x57f287, status: 'Voice turn completed.' },
+  };
+  const label = labels[options.stage];
+  const fields = [
+    { name: 'Status', value: label.status, inline: false },
+    ...(options.transcript ? [{ name: 'You said', value: fitEmbedFieldValue(options.transcript), inline: false }] : []),
+    ...(options.reply ? [{ name: 'Hermes replied', value: fitEmbedFieldValue(options.reply), inline: false }] : []),
+    { name: 'Session key', value: summarizeSessionKey(options.sessionKey), inline: false },
+    { name: 'Session id', value: summarizeSessionId(options.responseId ?? null), inline: false },
+    ...(typeof options.latencyMs === 'number' ? [{ name: 'Latency', value: formatLatency(options.latencyMs), inline: false }] : []),
+  ];
+
+  return new EmbedBuilder()
+    .setTitle(label.title)
+    .setColor(label.color)
+    .addFields(fields)
+    .setFooter({ text: 'Use /interrupt in Auto-listen mode to stop playback.' });
+}
+
 export async function runListenTurn(context: ListenExecutionContext) {
-  const { guildId, guild, requestUserId, connection, session, startNotice, finishReply } = context;
+  const { guildId, guild, requestUserId, connection, session, startNotice, progressReply, finishReply } = context;
 
   const listenLock = beginGuildListen(guildId, requestUserId);
   if (!listenLock.ok) {
@@ -69,6 +109,29 @@ export async function runListenTurn(context: ListenExecutionContext) {
       console.log(logPrefix, message, details ?? {});
     };
     const timing = getListenTimingConfig();
+    const safeProgressReply = async (payload: { embed?: EmbedBuilder; content?: string }) => {
+      if (!progressReply) return;
+      try {
+        await progressReply(payload);
+      } catch (error) {
+        console.error(logPrefix, 'Failed to update listen progress message', error);
+      }
+    };
+    const safeFinishReply = async (payload: { embed?: EmbedBuilder; content?: string }) => {
+      try {
+        await finishReply(payload);
+      } catch (error) {
+        console.error(logPrefix, 'Failed to send listen result message', error);
+      }
+    };
+
+    await safeProgressReply({
+      embed: buildListenStatusEmbed({
+        stage: 'capturing',
+        sessionKey: session.sessionKey,
+        responseId: session.hermesResponseId,
+      }),
+    });
 
     const opusStream = receiver.subscribe(requestUserId, {
       end: {
@@ -103,6 +166,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
     let speakingStarted = false;
     let ssrcMapped = false;
     let captureFinalized = false;
+    let maxCaptureTimer: NodeJS.Timeout | null = null;
 
     const onSpeakingStart = (userId: string) => {
       if (userId !== requestUserId) return;
@@ -170,14 +234,14 @@ export async function runListenTurn(context: ListenExecutionContext) {
       completed = true;
       clearTimeout(noAudioTimer);
       clearTimeout(noSpeechTimer);
-      clearTimeout(maxCaptureTimer);
+      if (maxCaptureTimer) clearTimeout(maxCaptureTimer);
       cleanupListeners();
       releaseListenLock();
       stopCapture('error');
       if (!out.destroyed) {
         out.destroy();
       }
-      await finishReply({ content: message });
+      await safeFinishReply({ content: message });
       await removeRequestTempDir(requestTmpDir);
     };
 
@@ -208,10 +272,12 @@ export async function runListenTurn(context: ListenExecutionContext) {
       );
     }, timing.noSpeechTimeoutMs);
 
-    const maxCaptureTimer = setTimeout(() => {
-      if (completed) return;
-      stopCapture('max-capture-timeout');
-    }, timing.maxCaptureMs);
+    maxCaptureTimer = timing.maxCaptureMs > 0
+      ? setTimeout(() => {
+          if (completed) return;
+          stopCapture('max-capture-timeout');
+        }, timing.maxCaptureMs)
+      : null;
 
     log('Receive pipeline started', {
       ...buildListenLogDetails({
@@ -304,7 +370,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
     out.on('finish', async () => {
       if (completed) return;
 
-      clearTimeout(maxCaptureTimer);
+      if (maxCaptureTimer) clearTimeout(maxCaptureTimer);
       clearTimeout(noSpeechTimer);
 
       log('PCM file complete', {
@@ -332,6 +398,13 @@ export async function runListenTurn(context: ListenExecutionContext) {
         const convertStartedAt = Date.now();
         await convertPcmToWav(pcmPath, wavPath);
         log('Converted PCM to WAV', { wavPath, durationMs: Date.now() - convertStartedAt });
+        await safeProgressReply({
+          embed: buildListenStatusEmbed({
+            stage: 'transcribing',
+            sessionKey: session.sessionKey,
+            responseId: session.hermesResponseId,
+          }),
+        });
 
         const transcriptionStartedAt = Date.now();
         const transcript = await transcribeWav(wavPath, transcriptBasePath);
@@ -350,6 +423,14 @@ export async function runListenTurn(context: ListenExecutionContext) {
         if (!transcript.trim()) {
           throw new Error('Audio arrived, but Whisper could not recognize any speech. Try speaking more clearly or a little louder.');
         }
+        await safeProgressReply({
+          embed: buildListenStatusEmbed({
+            stage: 'thinking',
+            transcript,
+            sessionKey: session.sessionKey,
+            responseId: session.hermesResponseId,
+          }),
+        });
 
         const hermesStartedAt = Date.now();
         const hermesResult = await runHermesTurnWithOptionalVerbose({
@@ -364,15 +445,42 @@ export async function runListenTurn(context: ListenExecutionContext) {
           hasHermesResponseId: Boolean(hermesResult.responseId),
           durationMs: Date.now() - hermesStartedAt,
         });
+        await safeProgressReply({
+          embed: buildListenStatusEmbed({
+            stage: 'synthesizing',
+            transcript,
+            reply: hermesResult.reply,
+            sessionKey: hermesResult.sessionKey,
+            responseId: hermesResult.responseId,
+          }),
+        });
 
         const ttsStartedAt = Date.now();
         await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider);
         log('TTS synthesis finished', { ttsPath, durationMs: Date.now() - ttsStartedAt, provider: session.ttsProvider });
         setVoiceSessionBotSpeaking(guildId, true);
         const playbackStartedAt = Date.now();
-        await playAudioFile(connection, ttsPath);
-        setVoiceSessionBotSpeaking(guildId, false);
-        log('Reply playback finished', { durationMs: Date.now() - playbackStartedAt });
+        const playbackSignal = context.preparePlayback?.() ?? context.playbackSignal;
+        await safeProgressReply({
+          embed: buildListenStatusEmbed({
+            stage: 'playing',
+            transcript,
+            reply: hermesResult.reply,
+            sessionKey: hermesResult.sessionKey,
+            responseId: hermesResult.responseId,
+          }),
+        });
+        let playbackResult;
+        try {
+          playbackResult = await playAudioFile(connection, ttsPath, { signal: playbackSignal });
+        } finally {
+          context.finishPlayback?.();
+          setVoiceSessionBotSpeaking(guildId, false);
+        }
+        log('Reply playback finished', {
+          durationMs: Date.now() - playbackStartedAt,
+          interrupted: playbackResult.interrupted,
+        });
         markVoiceSessionUsed(guildId, {
           initialized: true,
           sessionKey: hermesResult.sessionKey,
@@ -382,51 +490,29 @@ export async function runListenTurn(context: ListenExecutionContext) {
         completed = true;
         clearTimeout(noAudioTimer);
         clearTimeout(noSpeechTimer);
-        clearTimeout(maxCaptureTimer);
+        if (maxCaptureTimer) clearTimeout(maxCaptureTimer);
         cleanupListeners();
         releaseListenLock();
-        const replyEmbed = new EmbedBuilder()
-          .setTitle('Turn complete')
-          .setColor(0x57f287)
-          .addFields(
-            {
-              name: 'You said',
-              value: fitEmbedFieldValue(transcript),
-              inline: false,
-            },
-            {
-              name: 'Hermes replied',
-              value: fitEmbedFieldValue(hermesResult.reply),
-              inline: false,
-            },
-            {
-              name: 'Session key',
-              value: summarizeSessionKey(hermesResult.sessionKey),
-              inline: false,
-            },
-            {
-              name: 'Session id',
-              value: summarizeSessionId(hermesResult.responseId),
-              inline: false,
-            },
-            {
-              name: 'Latency',
-              value: formatLatency(Date.now() - listenStartedAt),
-              inline: false,
-            },
-          )
-          .setFooter({ text: 'Use /info if you need the full bridge state' });
-        await finishReply({ embed: replyEmbed });
+        const replyEmbed = buildListenStatusEmbed({
+          stage: playbackResult.interrupted ? 'interrupted' : 'complete',
+          transcript,
+          reply: hermesResult.reply,
+          sessionKey: hermesResult.sessionKey,
+          responseId: hermesResult.responseId,
+          latencyMs: Date.now() - listenStartedAt,
+        });
+        await safeFinishReply({ embed: replyEmbed });
       } catch (error) {
         console.error(logPrefix, 'Listen pipeline failed', error);
         completed = true;
         clearTimeout(noAudioTimer);
         clearTimeout(noSpeechTimer);
-        clearTimeout(maxCaptureTimer);
+        if (maxCaptureTimer) clearTimeout(maxCaptureTimer);
         cleanupListeners();
         releaseListenLock();
+        context.finishPlayback?.();
         setVoiceSessionBotSpeaking(guildId, false);
-        await finishReply({ content: `Processing failed: ${formatPipelineError(error)}` });
+        await safeFinishReply({ content: `Processing failed: ${formatPipelineError(error)}` });
       } finally {
         await removeRequestTempDir(requestTmpDir);
       }

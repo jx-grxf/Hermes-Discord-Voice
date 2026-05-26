@@ -55,8 +55,14 @@ test('getListenTimingConfig returns sane defaults', () => {
   assert.deepEqual(getListenTimingConfig(), {
     noAudioTimeoutMs: 12_000,
     noSpeechTimeoutMs: 5_000,
-    maxCaptureMs: 9_000,
+    maxCaptureMs: 0,
   });
+});
+
+test('getListenTimingConfig can disable hard capture cutoff', () => {
+  process.env.VOICE_MAX_CAPTURE_MS = '0';
+
+  assert.equal(getListenTimingConfig().maxCaptureMs, 0);
 });
 
 test('fitEmbedFieldValue normalizes empty text and truncates long text', () => {

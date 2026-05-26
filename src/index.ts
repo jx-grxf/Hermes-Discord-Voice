@@ -7,6 +7,7 @@ import { assertStartupReadiness } from './diagnostics.js';
 import {
   handleDebugText,
   handleInfo,
+  handleInterrupt,
   handleJoin,
   handleJoinModeButton,
   handleLeave,
@@ -40,6 +41,7 @@ const commands = [
   new SlashCommandBuilder().setName('join').setDescription('Join your voice channel and prepare the bridge'),
   new SlashCommandBuilder().setName('leave').setDescription('Leave current voice channel'),
   new SlashCommandBuilder().setName('listen').setDescription('Listen, transcribe, and reply in voice'),
+  new SlashCommandBuilder().setName('interrupt').setDescription('Stop the current Auto-listen playback'),
   new SlashCommandBuilder().setName('info').setDescription('Show bridge status and dependency health'),
   new SlashCommandBuilder().setName('help').setDescription('Open the interactive help menu'),
   new SlashCommandBuilder().setName('voice-verbose').setDescription('Configure verbose tool/thread streaming for the active voice session'),
@@ -252,6 +254,11 @@ client.on('interactionCreate', async (interaction) => {
 
       if (interaction.commandName === 'listen') {
         await handleListen(interaction);
+        return;
+      }
+
+      if (interaction.commandName === 'interrupt') {
+        await handleInterrupt(interaction);
         return;
       }
 

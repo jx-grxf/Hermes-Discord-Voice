@@ -5,6 +5,7 @@ import {
   ChatInputCommandInteraction,
   EmbedBuilder,
   Guild,
+  type Message,
   MessageFlags,
 } from 'discord.js';
 import {
@@ -61,13 +62,33 @@ import { ensureVerboseThread, runHermesTurnWithOptionalVerbose } from './verbose
 
 export { buildListenLogDetails, getListenTimingConfig, redactSessionKey } from './helpers.js';
 
-const autoListenControllers = new Map<string, { dispose: () => void; triggerActive: boolean }>();
+type AutoListenController = {
+  dispose: () => void;
+  triggerActive: boolean;
+  playbackAbortController: AbortController | null;
+  statusMessage: Message | null;
+};
+
+const autoListenControllers = new Map<string, AutoListenController>();
 
 function disposeAutoListen(guildId: string) {
   const controller = autoListenControllers.get(guildId);
   if (!controller) return;
+  controller.playbackAbortController?.abort();
   controller.dispose();
   autoListenControllers.delete(guildId);
+}
+
+function interruptAutoPlayback(guildId: string): 'interrupted' | 'busy' | 'not-playing' {
+  const controller = autoListenControllers.get(guildId);
+  const playbackAbortController = controller?.playbackAbortController;
+  if (!controller) return 'not-playing';
+  if (!playbackAbortController || playbackAbortController.signal.aborted) {
+    return controller.triggerActive ? 'busy' : 'not-playing';
+  }
+
+  playbackAbortController.abort();
+  return 'interrupted';
 }
 
 export async function handleJoin(interaction: ChatInputCommandInteraction) {
@@ -220,13 +241,22 @@ export async function handleListen(interaction: ChatInputCommandInteraction) {
         );
       await interaction.editReply({ embeds: [listeningEmbed] });
     },
-    finishReply: async ({ embed, content }) => {
+    progressReply: async ({ embed, content }) => {
       if (embed) {
-        await interaction.followUp({ embeds: [embed] });
+        await interaction.editReply({ embeds: [embed] });
         return;
       }
       if (content) {
-        await interaction.followUp({ content, flags: MessageFlags.Ephemeral });
+        await interaction.editReply({ content, embeds: [] });
+      }
+    },
+    finishReply: async ({ embed, content }) => {
+      if (embed) {
+        await interaction.editReply({ embeds: [embed], content: '' });
+        return;
+      }
+      if (content) {
+        await interaction.editReply({ content, embeds: [] });
       }
     },
   });
@@ -360,36 +390,97 @@ export async function handleVoiceVerbose(interaction: ChatInputCommandInteractio
   });
 }
 
-async function sendAutoModeMessage(guild: NonNullable<ListenExecutionContext['guild']>, textChannelId: string | null, payload: {
-  embed?: EmbedBuilder;
-  content?: string;
-}) {
-  if (!textChannelId) return;
-
-  const channel = guild.channels.cache.get(textChannelId) ?? await guild.channels.fetch(textChannelId).catch(() => null);
-  if (!channel?.isTextBased()) return;
-
-  if (payload.embed) {
-    await channel.send({ embeds: [payload.embed] });
+export async function handleInterrupt(interaction: ChatInputCommandInteraction) {
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) {
+    await interaction.editReply({ content: 'This command only works inside a server.' });
     return;
   }
 
-  if (payload.content) {
-    await channel.send({ content: payload.content });
+  const session = getVoiceSession(guildId);
+  if (!session) {
+    await interaction.editReply({ content: 'No Hermes voice session is active yet. Run `/join` first.' });
+    return;
   }
+
+  if (session.listenMode !== 'auto') {
+    await interaction.editReply({ content: 'Interrupt is only active in Auto-listen mode. Switch to Auto-listen from `/join` first.' });
+    return;
+  }
+
+  const connection = getVoiceConnection(guildId);
+  if (!connection) {
+    await interaction.editReply({ content: 'The bot is not connected to voice right now. Run `/join` first.' });
+    return;
+  }
+
+  const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member || member.voice.channelId !== connection.joinConfig.channelId) {
+    await interaction.editReply({ content: 'You need to be in the same voice channel as the bot to interrupt playback.' });
+    return;
+  }
+
+  const interruptResult = interruptAutoPlayback(guildId);
+  if (interruptResult === 'busy') {
+    await interaction.editReply({ content: 'The current Auto-listen turn is still being prepared. Playback can be interrupted as soon as the bot starts speaking.' });
+    return;
+  }
+  if (interruptResult === 'not-playing') {
+    await interaction.editReply({ content: 'Nothing is playing right now, so there is nothing to interrupt.' });
+    return;
+  }
+
+  await interaction.editReply({ content: 'Interrupted current playback. Speak again when the bot is idle.' });
 }
 
 function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionContext['guild']>, connection: VoiceConnection) {
   disposeAutoListen(guildId);
 
   const receiver = connection.receiver;
-  const controller = { dispose: () => {}, triggerActive: false };
+  const controller: AutoListenController = {
+    dispose: () => {},
+    triggerActive: false,
+    playbackAbortController: null,
+    statusMessage: null,
+  };
+
+  const upsertAutoModeMessage = async (payload: { embed?: EmbedBuilder; content?: string }) => {
+    const textChannelId = getVoiceSession(guildId)?.autoListenTextChannelId ?? null;
+    if (!textChannelId) return;
+
+    const channel = guild.channels.cache.get(textChannelId) ?? await guild.channels.fetch(textChannelId).catch(() => null);
+    if (!channel?.isTextBased()) return;
+
+    const messagePayload = payload.embed
+      ? { embeds: [payload.embed], content: payload.content ?? '' }
+      : { embeds: [], content: payload.content ?? '' };
+
+    if (controller.statusMessage) {
+      try {
+        controller.statusMessage = await controller.statusMessage.edit(messagePayload);
+        return;
+      } catch (error) {
+        console.error('Failed to edit auto-listen status message; sending a replacement', error);
+        controller.statusMessage = null;
+      }
+    }
+
+    controller.statusMessage = await channel.send(messagePayload);
+  };
 
   const onSpeakingStart = (userId: string) => {
     const session = getVoiceSession(guildId);
     if (!session || session.listenMode !== 'auto') return;
     if (userId !== session.createdByUserId) return;
-    if (session.botSpeaking || controller.triggerActive || getActiveGuildListenUser(guildId)) return;
+    if (session.botSpeaking) {
+      if (interruptAutoPlayback(guildId) === 'interrupted') {
+        void upsertAutoModeMessage({
+          content: 'Interrupted current playback. Speak again when the bot is idle.',
+        });
+      }
+      return;
+    }
+    if (controller.triggerActive || getActiveGuildListenUser(guildId)) return;
 
     controller.triggerActive = true;
     void runListenTurn({
@@ -398,9 +489,16 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
       requestUserId: userId,
       connection,
       session,
+      preparePlayback: () => {
+        controller.playbackAbortController = new AbortController();
+        return controller.playbackAbortController.signal;
+      },
+      finishPlayback: () => {
+        controller.playbackAbortController = null;
+      },
+      progressReply: upsertAutoModeMessage,
       finishReply: async (payload) => {
-        const activeSession = getVoiceSession(guildId);
-        await sendAutoModeMessage(guild, activeSession?.autoListenTextChannelId ?? null, payload);
+        await upsertAutoModeMessage(payload);
       },
     })
       .catch((error) => {
@@ -408,6 +506,8 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
       })
       .finally(() => {
         controller.triggerActive = false;
+        controller.playbackAbortController = null;
+        controller.statusMessage = null;
       });
   };
 

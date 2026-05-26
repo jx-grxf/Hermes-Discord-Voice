@@ -16,6 +16,77 @@ import { getWhisperModelPath } from './diagnostics.js';
 import { getConfiguredTtsProvider, getPiperBinaryPath, getPiperModelPath } from './tts-config.js';
 
 export type TtsProvider = 'say' | 'elevenlabs' | 'piper' | 'hermes';
+export type PlaybackResult = {
+  interrupted: boolean;
+};
+
+export function calculatePlaybackTimeoutMs(
+  durationMs: number | null,
+  env: NodeJS.ProcessEnv = process.env,
+): number {
+  const configuredMin = Number(env.PLAYBACK_TIMEOUT_MIN_MS ?? '');
+  const configuredGrace = Number(env.PLAYBACK_TIMEOUT_GRACE_MS ?? '');
+  const minMs = Number.isFinite(configuredMin) && configuredMin >= 5_000 ? Math.floor(configuredMin) : 60_000;
+  const graceMs = Number.isFinite(configuredGrace) && configuredGrace >= 1_000 ? Math.floor(configuredGrace) : 15_000;
+
+  if (!Number.isFinite(durationMs) || durationMs === null || durationMs <= 0) {
+    return minMs;
+  }
+
+  return Math.max(minMs, Math.ceil(durationMs + graceMs));
+}
+
+function readWavDurationMs(filePath: string): number | null {
+  const buffer = fs.readFileSync(filePath);
+  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF' || buffer.toString('ascii', 8, 12) !== 'WAVE') {
+    return null;
+  }
+
+  let offset = 12;
+  let sampleRate: number | null = null;
+  let channels: number | null = null;
+  let bitsPerSample: number | null = null;
+  let dataSize: number | null = null;
+
+  while (offset + 8 <= buffer.length) {
+    const chunkId = buffer.toString('ascii', offset, offset + 4);
+    const chunkSize = buffer.readUInt32LE(offset + 4);
+    const chunkStart = offset + 8;
+    const chunkEnd = chunkStart + chunkSize;
+    if (chunkEnd > buffer.length) break;
+
+    if (chunkId === 'fmt ' && chunkSize >= 16) {
+      channels = buffer.readUInt16LE(chunkStart + 2);
+      sampleRate = buffer.readUInt32LE(chunkStart + 4);
+      bitsPerSample = buffer.readUInt16LE(chunkStart + 14);
+    } else if (chunkId === 'data') {
+      dataSize = chunkSize;
+    }
+
+    offset = chunkEnd + (chunkSize % 2);
+  }
+
+  if (!sampleRate || !channels || !bitsPerSample || !dataSize) return null;
+
+  const bytesPerSecond = sampleRate * channels * (bitsPerSample / 8);
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return null;
+
+  return (dataSize / bytesPerSecond) * 1000;
+}
+
+function formatTimeoutMs(ms: number): string {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`;
+}
+
+function abortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'AbortError';
+}
 
 export async function convertPcmToWav(pcmPath: string, wavPath: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -35,7 +106,13 @@ export async function convertPcmToWav(pcmPath: string, wavPath: string): Promise
   });
 }
 
-export async function convertAudioToDiscordWav(inputPath: string, wavPath: string): Promise<void> {
+export async function convertAudioToDiscordWav(
+  inputPath: string,
+  wavPath: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<void> {
+  if (options.signal?.aborted) throw abortError('Discord playback conversion was interrupted.');
+
   await new Promise<void>((resolve, reject) => {
     const ffmpeg = spawn('ffmpeg', [
       '-i', inputPath,
@@ -46,11 +123,31 @@ export async function convertAudioToDiscordWav(inputPath: string, wavPath: strin
       '-y',
     ]);
     let stderr = '';
+    let aborted = false;
+    let killTimer: NodeJS.Timeout | null = null;
+
+    const onAbort = () => {
+      aborted = true;
+      ffmpeg.kill('SIGTERM');
+      killTimer = setTimeout(() => ffmpeg.kill('SIGKILL'), 2_000);
+    };
+
+    options.signal?.addEventListener('abort', onAbort, { once: true });
     ffmpeg.stderr.on('data', (chunk) => {
       stderr += chunk.toString();
     });
-    ffmpeg.on('error', reject);
+    ffmpeg.on('error', (error) => {
+      options.signal?.removeEventListener('abort', onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      reject(error);
+    });
     ffmpeg.on('close', (code) => {
+      options.signal?.removeEventListener('abort', onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      if (aborted || options.signal?.aborted) {
+        reject(abortError('Discord playback conversion was interrupted.'));
+        return;
+      }
       if (code === 0) {
         resolve();
         return;
@@ -326,27 +423,44 @@ export async function synthesizeSpeech(text: string, outPath: string, provider: 
   await synthesizeWithSay(text, outPath);
 }
 
-export async function playAudioFile(connection: VoiceConnection, filePath: string): Promise<void> {
+export async function playAudioFile(
+  connection: VoiceConnection,
+  filePath: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<PlaybackResult> {
   const stat = await fs.promises.stat(filePath).catch(() => null);
   if (!stat || stat.size === 0) {
     throw new Error(`TTS produced no playable audio at ${filePath}.`);
   }
 
   const playbackPath = path.join(path.dirname(filePath), 'discord-playback.wav');
-  await convertAudioToDiscordWav(filePath, playbackPath);
+  try {
+    await convertAudioToDiscordWav(filePath, playbackPath, { signal: options.signal });
+  } catch (error) {
+    if (isAbortError(error)) return { interrupted: true };
+    throw error;
+  }
   const playbackStat = await fs.promises.stat(playbackPath).catch(() => null);
   if (!playbackStat || playbackStat.size === 0) {
     throw new Error(`Discord playback conversion produced no audio at ${playbackPath}.`);
   }
+  const playbackDurationMs = readWavDurationMs(playbackPath);
+  const playbackTimeoutMs = calculatePlaybackTimeoutMs(playbackDurationMs);
 
   console.log('Preparing Discord playback', {
     inputPath: filePath,
     inputBytes: stat.size,
     playbackPath,
     playbackBytes: playbackStat.size,
+    playbackDurationMs,
+    playbackTimeoutMs,
     guildId: connection.joinConfig.guildId,
     channelId: connection.joinConfig.channelId,
   });
+
+  if (options.signal?.aborted) {
+    return { interrupted: true };
+  }
 
   const player = createAudioPlayer({ behaviors: { noSubscriber: NoSubscriberBehavior.Pause } });
   const probe = await demuxProbe(fs.createReadStream(playbackPath));
@@ -356,8 +470,32 @@ export async function playAudioFile(connection: VoiceConnection, filePath: strin
     throw new Error('Discord voice playback failed because the connection has no active subscriber.');
   }
 
-  await new Promise<void>((resolve, reject) => {
+  return await new Promise<PlaybackResult>((resolve, reject) => {
     let settled = false;
+    let playbackTimeout: NodeJS.Timeout;
+
+    function onAbort() {
+      finish(undefined, true);
+    }
+
+    function finish(error?: Error, interrupted = false) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(playbackTimeout);
+      options.signal?.removeEventListener('abort', onAbort);
+      player.removeAllListeners();
+      player.stop(true);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve({ interrupted });
+    }
+
+    playbackTimeout = setTimeout(() => {
+      finish(new Error(`Discord voice playback did not finish within ${formatTimeoutMs(playbackTimeoutMs)}.`));
+    }, playbackTimeoutMs);
+
     player.on('stateChange', (oldState, newState) => {
       console.log('Discord audio player state changed', {
         from: oldState.status,
@@ -367,23 +505,7 @@ export async function playAudioFile(connection: VoiceConnection, filePath: strin
       });
     });
 
-    const playbackTimeout = setTimeout(() => {
-      finish(new Error('Discord voice playback did not finish within 60s.'));
-    }, 60_000);
-
-    const finish = (error?: Error) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(playbackTimeout);
-      player.removeAllListeners();
-      player.stop(true);
-      if (error) {
-        reject(error);
-        return;
-      }
-      resolve();
-    };
-
+    options.signal?.addEventListener('abort', onAbort, { once: true });
     player.once('error', (error) => finish(error));
     player.once(AudioPlayerStatus.Idle, () => finish());
     player.play(resource);

@@ -54,7 +54,8 @@ export function getNoSpeechTimeoutMs(): number {
 
 export function getMaxCaptureMs(): number {
   const raw = Number(process.env.VOICE_MAX_CAPTURE_MS ?? '');
-  return Number.isFinite(raw) && raw >= 4_000 ? raw : 9_000;
+  if (Number.isFinite(raw) && raw === 0) return 0;
+  return Number.isFinite(raw) && raw >= 4_000 ? raw : 0;
 }
 
 export function getListenTimingConfig() {
