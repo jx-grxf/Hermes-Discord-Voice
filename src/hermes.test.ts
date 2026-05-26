@@ -7,6 +7,8 @@ import {
   extractHermesCliSessionId,
   extractHermesReply,
   extractHermesResponseId,
+  askHermes,
+  type HermesStreamEvent,
   stripHermesCliMetadata,
 } from './hermes.js';
 
@@ -139,4 +141,86 @@ test('createHermesSession returns an empty response chain for a new voice sessio
     sessionKey: 'conversation-1',
     responseId: null,
   });
+});
+
+test('askHermes emits Responses API stream text and tool events', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalVerboseStream = process.env.HERMES_VERBOSE_STREAM;
+  const originalBaseUrl = process.env.HERMES_API_BASE_URL;
+  const frames = [
+    {
+      event: 'response.output_item.added',
+      data: {
+        item: {
+          type: 'function_call',
+          name: 'terminal',
+          arguments: { cmd: 'date' },
+          call_id: 'call_1',
+        },
+      },
+    },
+    {
+      event: 'response.output_item.added',
+      data: {
+        item: {
+          type: 'function_call_output',
+          output: 'Tuesday',
+          call_id: 'call_1',
+        },
+      },
+    },
+    {
+      event: 'response.output_text.delta',
+      data: { delta: 'OK' },
+    },
+    {
+      event: 'response.completed',
+      data: {
+        response: {
+          id: 'resp_stream',
+          output: [{ content: [{ type: 'output_text', text: 'OK' }] }],
+        },
+      },
+    },
+  ];
+
+  const body = frames
+    .map((frame) => `event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`)
+    .join('');
+
+  globalThis.fetch = (async () => new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(body));
+        controller.close();
+      },
+    }),
+    { status: 200 },
+  )) as typeof fetch;
+  process.env.HERMES_VERBOSE_STREAM = '1';
+  process.env.HERMES_API_BASE_URL = 'http://127.0.0.1:8642/v1';
+
+  try {
+    const events: HermesStreamEvent[] = [];
+    const result = await askHermes('hello', { sessionKey: 'conversation-1', responseId: null }, {
+      onEvent: (event) => {
+        events.push(event);
+      },
+    });
+
+    assert.equal(result.reply, 'OK');
+    assert.equal(result.responseId, 'resp_stream');
+    assert.deepEqual(events, [
+      { type: 'tool_started', name: 'terminal', arguments: '{"cmd":"date"}', callId: 'call_1' },
+      { type: 'tool_completed', name: 'terminal', output: 'Tuesday', callId: 'call_1' },
+      { type: 'text_delta', text: 'OK' },
+      { type: 'response_completed', responseId: 'resp_stream', text: 'OK' },
+    ]);
+  } finally {
+    globalThis.fetch = originalFetch;
+    if (originalVerboseStream === undefined) delete process.env.HERMES_VERBOSE_STREAM;
+    else process.env.HERMES_VERBOSE_STREAM = originalVerboseStream;
+    if (originalBaseUrl === undefined) delete process.env.HERMES_API_BASE_URL;
+    else process.env.HERMES_API_BASE_URL = originalBaseUrl;
+  }
 });

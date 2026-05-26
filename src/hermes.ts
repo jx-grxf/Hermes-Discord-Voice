@@ -17,6 +17,17 @@ export type HermesTurnResult = {
   responseId: string | null;
 };
 
+export type HermesStreamEvent =
+  | { type: 'text_delta'; text: string }
+  | { type: 'tool_started'; name: string; arguments: string; callId: string | null }
+  | { type: 'tool_completed'; name: string | null; output: string; callId: string | null }
+  | { type: 'response_completed'; responseId: string | null; text: string | null }
+  | { type: 'notice'; message: string };
+
+export type HermesAskOptions = {
+  onEvent?: (event: HermesStreamEvent) => void | Promise<void>;
+};
+
 type HermesRawResult = {
   body: string;
   responseId: string | null;
@@ -79,6 +90,22 @@ function getHermesModel(): string {
 
 function getHermesSource(): string {
   return process.env.HERMES_SOURCE?.trim() || 'discord-voice';
+}
+
+function isTruthy(value: string | undefined): boolean {
+  return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase());
+}
+
+export function isHermesVerboseStreamingEnabled(): boolean {
+  return isTruthy(process.env.HERMES_VERBOSE_STREAM);
+}
+
+function getHermesApiHeaders(extra: Record<string, string> = {}): Record<string, string> {
+  const key = process.env.HERMES_API_KEY?.trim();
+  return {
+    ...(key ? { Authorization: `Bearer ${key}` } : {}),
+    ...extra,
+  };
 }
 
 function commaList(value: string | undefined): string[] {
@@ -226,11 +253,6 @@ function runHermesCli(message: string, session: HermesSessionRef): Promise<Herme
 }
 
 async function callHermesResponsesApi(message: string, session: HermesSessionRef): Promise<HermesRawResult> {
-  const key = process.env.HERMES_API_KEY?.trim();
-  if (!key) {
-    throw new Error('HERMES_API_KEY is required when HERMES_TRANSPORT=api.');
-  }
-
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), getHermesTimeoutMs());
   let response: Response;
@@ -238,7 +260,7 @@ async function callHermesResponsesApi(message: string, session: HermesSessionRef
     response = await fetch(`${getHermesApiBase()}/responses`, {
       method: 'POST',
       headers: {
-        Authorization: `Bearer ${key}`,
+        ...getHermesApiHeaders(),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
@@ -267,7 +289,241 @@ async function callHermesResponsesApi(message: string, session: HermesSessionRef
   };
 }
 
-export async function askHermes(transcript: string, session: HermesSessionRef): Promise<HermesTurnResult> {
+type SseMessage = {
+  event: string;
+  data: string;
+};
+
+function parseSseMessages(buffer: string): { messages: SseMessage[]; rest: string } {
+  const messages: SseMessage[] = [];
+  const normalized = buffer.replace(/\r\n/g, '\n');
+  const parts = normalized.split('\n\n');
+  const rest = parts.pop() ?? '';
+
+  for (const part of parts) {
+    const lines = part.split('\n');
+    let event = 'message';
+    const dataLines: string[] = [];
+
+    for (const line of lines) {
+      if (line.startsWith('event:')) {
+        event = line.slice('event:'.length).trim();
+      } else if (line.startsWith('data:')) {
+        dataLines.push(line.slice('data:'.length).trimStart());
+      }
+    }
+
+    if (dataLines.length > 0) {
+      messages.push({ event, data: dataLines.join('\n') });
+    }
+  }
+
+  return { messages, rest };
+}
+
+function parseJsonObject(value: string): Record<string, unknown> | null {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
+  } catch {
+    return null;
+  }
+}
+
+function stringifyCompact(value: unknown, maxLength = 900): string {
+  let text: string;
+  if (typeof value === 'string') {
+    text = value;
+  } else {
+    try {
+      text = JSON.stringify(value);
+    } catch {
+      text = String(value);
+    }
+  }
+  return text.length > maxLength ? `${text.slice(0, maxLength - 3)}...` : text;
+}
+
+function extractCompletedResponseText(response: Record<string, unknown>): string | null {
+  const output = response.output;
+  if (!Array.isArray(output)) return null;
+
+  const parts: string[] = [];
+  for (const item of output) {
+    if (!item || typeof item !== 'object') continue;
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const block of content) {
+      if (!block || typeof block !== 'object') continue;
+      const text = (block as { text?: unknown }).text;
+      if (typeof text === 'string' && text.trim()) parts.push(text);
+    }
+  }
+
+  return parts.join('\n\n').trim() || null;
+}
+
+async function emitHermesStreamEvent(
+  callback: HermesAskOptions['onEvent'],
+  event: HermesStreamEvent,
+): Promise<void> {
+  if (!callback) return;
+  await callback(event);
+}
+
+async function handleResponsesSseMessage(
+  message: SseMessage,
+  options: {
+    onEvent?: HermesAskOptions['onEvent'];
+    textParts: string[];
+    toolNames: Map<string, string>;
+    completed: { responseId: string | null; text: string | null };
+  },
+): Promise<void> {
+  const data = parseJsonObject(message.data);
+  if (!data) return;
+
+  if (message.event === 'response.output_text.delta') {
+    const delta = typeof data.delta === 'string' ? data.delta : '';
+    if (!delta) return;
+    options.textParts.push(delta);
+    await emitHermesStreamEvent(options.onEvent, { type: 'text_delta', text: delta });
+    return;
+  }
+
+  if (message.event === 'response.output_item.added') {
+    const item = data.item && typeof data.item === 'object' ? data.item as Record<string, unknown> : null;
+    if (!item) return;
+
+    if (item.type === 'function_call') {
+      const name = typeof item.name === 'string' ? item.name : 'tool';
+      const callId = typeof item.call_id === 'string' ? item.call_id : null;
+      if (callId) options.toolNames.set(callId, name);
+      await emitHermesStreamEvent(options.onEvent, {
+        type: 'tool_started',
+        name,
+        arguments: stringifyCompact(item.arguments ?? ''),
+        callId,
+      });
+      return;
+    }
+
+    if (item.type === 'function_call_output') {
+      const callId = typeof item.call_id === 'string' ? item.call_id : null;
+      await emitHermesStreamEvent(options.onEvent, {
+        type: 'tool_completed',
+        name: callId ? options.toolNames.get(callId) ?? null : null,
+        output: stringifyCompact(item.output ?? ''),
+        callId,
+      });
+    }
+    return;
+  }
+
+  if (message.event === 'response.completed') {
+    const response = data.response && typeof data.response === 'object' ? data.response as Record<string, unknown> : null;
+    if (!response) return;
+    options.completed.responseId = typeof response.id === 'string' ? response.id : null;
+    options.completed.text = extractCompletedResponseText(response);
+    await emitHermesStreamEvent(options.onEvent, {
+      type: 'response_completed',
+      responseId: options.completed.responseId,
+      text: options.completed.text,
+    });
+  }
+}
+
+async function callHermesResponsesApiStream(
+  message: string,
+  session: HermesSessionRef,
+  options: HermesAskOptions,
+): Promise<HermesRawResult> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), getHermesTimeoutMs());
+  let response: Response;
+  try {
+    response = await fetch(`${getHermesApiBase()}/responses`, {
+      method: 'POST',
+      headers: {
+        ...getHermesApiHeaders({ Accept: 'text/event-stream' }),
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: getHermesModel(),
+        input: message,
+        conversation: session.sessionKey,
+        stream: true,
+      }),
+      signal: controller.signal,
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Hermes API stream timed out after ${getHermesTimeoutMs()}ms.`);
+    }
+    throw error;
+  }
+
+  try {
+    if (!response.ok) {
+      const text = await response.text();
+      throw new Error(`Hermes API stream failed with status ${response.status}: ${text || 'no response body'}`);
+    }
+    if (!response.body) {
+      throw new Error('Hermes API stream returned no response body.');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    const textParts: string[] = [];
+    const toolNames = new Map<string, string>();
+    const completed = { responseId: null as string | null, text: null as string | null };
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const parsed = parseSseMessages(buffer);
+      buffer = parsed.rest;
+
+      for (const sseMessage of parsed.messages) {
+        await handleResponsesSseMessage(sseMessage, {
+          onEvent: options.onEvent,
+          textParts,
+          toolNames,
+          completed,
+        });
+      }
+    }
+
+    buffer += decoder.decode();
+    const parsed = parseSseMessages(`${buffer}\n\n`);
+    for (const sseMessage of parsed.messages) {
+      await handleResponsesSseMessage(sseMessage, {
+        onEvent: options.onEvent,
+        textParts,
+        toolNames,
+        completed,
+      });
+    }
+
+    const body = completed.text ?? textParts.join('').trim();
+    return {
+      body,
+      responseId: completed.responseId ?? session.responseId ?? null,
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function askHermes(
+  transcript: string,
+  session: HermesSessionRef,
+  options: HermesAskOptions = {},
+): Promise<HermesTurnResult> {
   const message = transcript.trim();
   if (!message) {
     return {
@@ -277,9 +533,11 @@ export async function askHermes(transcript: string, session: HermesSessionRef): 
     };
   }
 
-  const raw = getHermesTransport() === 'api'
-    ? await callHermesResponsesApi(message, session)
-    : await runHermesCli(message, session);
+  const raw = options.onEvent && isHermesVerboseStreamingEnabled()
+    ? await callHermesResponsesApiStream(message, session, options)
+    : getHermesTransport() === 'api'
+      ? await callHermesResponsesApi(message, session)
+      : await runHermesCli(message, session);
   const reply = extractHermesReply(raw.body);
   if (!reply) {
     throw new Error('Hermes returned no usable reply.');
@@ -293,12 +551,9 @@ export async function askHermes(transcript: string, session: HermesSessionRef): 
 }
 
 export async function checkHermesApiHealth(): Promise<{ ok: boolean; detail: string }> {
-  const key = process.env.HERMES_API_KEY?.trim();
-  if (!key) return { ok: false, detail: 'HERMES_API_KEY is not set' };
-
   try {
     const response = await fetch(`${getHermesApiBase().replace(/\/v1$/, '')}/health`, {
-      headers: { Authorization: `Bearer ${key}` },
+      headers: getHermesApiHeaders(),
     });
     return {
       ok: response.ok,

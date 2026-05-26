@@ -101,12 +101,15 @@ export function collectBridgeHealth(env: NodeJS.ProcessEnv = process.env): Bridg
 
 export async function collectHermesApiHealth(env: NodeJS.ProcessEnv = process.env): Promise<HealthCheck | null> {
   const transport = env.HERMES_TRANSPORT?.trim().toLowerCase();
-  if (transport !== 'api' && !env.HERMES_API_KEY?.trim()) return null;
+  const verboseStream = ['1', 'true', 'yes', 'on'].includes((env.HERMES_VERBOSE_STREAM ?? '').trim().toLowerCase());
+  if (transport !== 'api' && !verboseStream && !env.HERMES_API_KEY?.trim()) return null;
   const health = await checkHermesApiHealth();
   return {
-    name: 'Hermes API',
+    name: verboseStream ? 'Hermes API streaming' : 'Hermes API',
     ok: health.ok,
-    detail: health.detail,
+    detail: verboseStream && !health.ok
+      ? `${health.detail}; required for HERMES_VERBOSE_STREAM=1`
+      : health.detail,
   };
 }
 
