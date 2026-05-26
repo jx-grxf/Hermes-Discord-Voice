@@ -91,7 +91,7 @@ function pidExists(pid: number): boolean {
 function acquireBotLock() {
   fs.mkdirSync(LOCK_DIR, { recursive: true });
 
-  if (fs.existsSync(LOCK_FILE)) {
+  const clearStaleLock = () => {
     try {
       const raw = fs.readFileSync(LOCK_FILE, 'utf8').trim();
       const existingPid = Number(raw);
@@ -103,9 +103,23 @@ function acquireBotLock() {
     } catch {
       fs.rmSync(LOCK_FILE, { force: true });
     }
+  };
+
+  if (fs.existsSync(LOCK_FILE)) {
+    clearStaleLock();
   }
 
-  fs.writeFileSync(LOCK_FILE, `${process.pid}\n`, { flag: 'wx' });
+  try {
+    fs.writeFileSync(LOCK_FILE, `${process.pid}\n`, { flag: 'wx' });
+  } catch (error) {
+    if (error && typeof error === 'object' && 'code' in error && error.code === 'EEXIST') {
+      clearStaleLock();
+      fs.writeFileSync(LOCK_FILE, `${process.pid}\n`, { flag: 'wx' });
+    } else {
+      throw error;
+    }
+  }
+
   botLockHeld = true;
 }
 
@@ -188,7 +202,20 @@ client.once('clientReady', async () => {
   if (!applicationId) {
     throw new Error('Could not determine Discord application id after login.');
   }
-  await registerCommands(applicationId);
+  try {
+    await registerCommands(applicationId);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    console.error(
+      [
+        'Slash command registration failed.',
+        'Check that DISCORD_GUILD_ID is the server where this bot is installed,',
+        'and invite it with scopes `bot` and `applications.commands`.',
+        `Details: ${detail}`,
+      ].join(' '),
+    );
+    await gracefulShutdown('UNCAUGHT_EXCEPTION');
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {

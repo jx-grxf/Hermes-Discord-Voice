@@ -10,6 +10,7 @@
     "dev": "node scripts/run-with-project-node.cjs tsx src/index.ts",
     "build": "node scripts/run-with-project-node.cjs tsc -p tsconfig.json",
     "start": "node scripts/run-with-project-node.cjs node dist/index.js",
+    "stop": "node scripts/stop-bot.cjs",
     "doctor": "npm run doctor:bridge",
     "doctor:bridge": "node scripts/run-with-project-node.cjs tsx src/doctor.ts",
     "test": "node scripts/run-with-project-node.cjs node --import tsx --test src/*.test.ts src/discord/*.test.ts"
