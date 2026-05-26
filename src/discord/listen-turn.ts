@@ -138,7 +138,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
     const opusStream = receiver.subscribe(requestUserId, {
       end: {
         behavior: EndBehaviorType.AfterSilence,
-        duration: 1200,
+        duration: timing.silenceEndMs,
       },
     });
 
@@ -147,6 +147,9 @@ export async function runListenTurn(context: ListenExecutionContext) {
       decoder = new prism.opus.Decoder({ frameSize: 960, channels: 2, rate: 48000 });
     } catch (error) {
       console.error(logPrefix, 'Opus decoder init failed', error);
+      try {
+        opusStream.destroy();
+      } catch {}
       releaseListenLock();
       await finishReply({
         content: 'Opus decoding is unavailable. Install `opusscript` or `@discordjs/opus`, then restart the bot.',
@@ -169,6 +172,14 @@ export async function runListenTurn(context: ListenExecutionContext) {
     let ssrcMapped = false;
     let captureFinalized = false;
     let maxCaptureTimer: NodeJS.Timeout | null = null;
+    let resolveTurn: (() => void) | null = null;
+    const turnDone = new Promise<void>((resolve) => {
+      resolveTurn = resolve;
+    });
+    const finishTurn = () => {
+      resolveTurn?.();
+      resolveTurn = null;
+    };
 
     const onSpeakingStart = (userId: string) => {
       if (userId !== requestUserId) return;
@@ -191,10 +202,15 @@ export async function runListenTurn(context: ListenExecutionContext) {
     receiver.speaking.on('end', onSpeakingEnd);
     receiver.ssrcMap.on('create', onSsrcCreate);
 
+    const onRunAbort = () => {
+      void finishWithError('Voice run was stopped.');
+    };
+
     const cleanupListeners = () => {
       receiver.speaking.off('start', onSpeakingStart);
       receiver.speaking.off('end', onSpeakingEnd);
       receiver.ssrcMap.off('create', onSsrcCreate);
+      context.runSignal?.removeEventListener('abort', onRunAbort);
     };
 
     const stopCapture = (reason: string) => {
@@ -231,7 +247,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
       }
     };
 
-    const finishWithError = async (message: string) => {
+    async function finishWithError(message: string) {
       if (completed) return;
       completed = true;
       clearTimeout(noAudioTimer);
@@ -245,7 +261,8 @@ export async function runListenTurn(context: ListenExecutionContext) {
       }
       await safeFinishReply({ content: message });
       await removeRequestTempDir(requestTmpDir);
-    };
+      finishTurn();
+    }
 
     const noAudioTimer = setTimeout(async () => {
       if (completed || receivedOpusPackets > 0) return;
@@ -262,7 +279,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
     }, timing.noAudioTimeoutMs);
 
     const noSpeechTimer = setTimeout(async () => {
-      if (completed || speakingStarted) return;
+      if (completed || speakingStarted || receivedOpusPackets > 0 || receivedPcmBytes > 0) return;
       console.warn(logPrefix, 'No speech detected before timeout', {
         guildId,
         channelId: connection.joinConfig.channelId,
@@ -273,6 +290,8 @@ export async function runListenTurn(context: ListenExecutionContext) {
         'I only received background audio or unclear noise, not clear speech. Try again and speak more directly into the mic.',
       );
     }, timing.noSpeechTimeoutMs);
+
+    context.runSignal?.addEventListener('abort', onRunAbort, { once: true });
 
     maxCaptureTimer = timing.maxCaptureMs > 0
       ? setTimeout(() => {
@@ -298,6 +317,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
     opusStream.on('data', (chunk) => {
       receivedOpusPackets += 1;
       receivedOpusBytes += chunk.length;
+      speakingStarted = true;
       if (receivedOpusPackets === 1) {
         clearTimeout(noAudioTimer);
         log('First opus packet received', {
@@ -398,7 +418,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
 
       try {
         const convertStartedAt = Date.now();
-        await convertPcmToWav(pcmPath, wavPath);
+        await convertPcmToWav(pcmPath, wavPath, { signal: context.runSignal });
         log('Converted PCM to WAV', { wavPath, durationMs: Date.now() - convertStartedAt });
         await safeProgressReply({
           embed: buildListenStatusEmbed({
@@ -409,7 +429,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
         });
 
         const transcriptionStartedAt = Date.now();
-        const transcript = await transcribeWav(wavPath, transcriptBasePath);
+        const transcript = await transcribeWav(wavPath, transcriptBasePath, { signal: context.runSignal });
         log('Transcription finished', {
           ...buildListenLogDetails({
             guildId,
@@ -521,10 +541,12 @@ export async function runListenTurn(context: ListenExecutionContext) {
         await safeFinishReply({ content: `Processing failed: ${formatPipelineError(error)}` });
       } finally {
         await removeRequestTempDir(requestTmpDir);
+        finishTurn();
       }
     });
 
     opusStream.pipe(decoder).pipe(out);
+    await turnDone;
   } catch (error) {
     releaseListenLock();
     if (tmpDir) {

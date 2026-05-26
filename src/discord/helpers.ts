@@ -58,11 +58,17 @@ export function getMaxCaptureMs(): number {
   return Number.isFinite(raw) && raw >= 4_000 ? raw : 0;
 }
 
+export function getSilenceEndMs(): number {
+  const raw = Number(process.env.VOICE_SILENCE_END_MS ?? '');
+  return Number.isFinite(raw) && raw >= 500 ? Math.floor(raw) : 1_200;
+}
+
 export function getListenTimingConfig() {
   return {
     noAudioTimeoutMs: getNoAudioTimeoutMs(),
     noSpeechTimeoutMs: getNoSpeechTimeoutMs(),
     maxCaptureMs: getMaxCaptureMs(),
+    silenceEndMs: getSilenceEndMs(),
   };
 }
 

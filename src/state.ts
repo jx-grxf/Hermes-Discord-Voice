@@ -16,6 +16,7 @@ export type VoiceSessionState = {
   verboseThreadId: string | null;
   verboseStartedAt: number | null;
   ttsProvider: TtsProvider;
+  speakerAllowlistUserIds: string[];
 };
 
 const activeSessionByGuild = new Map<string, VoiceSessionState>();
@@ -59,6 +60,7 @@ export function createVoiceSession(
     verboseThreadId: null,
     verboseStartedAt: null,
     ttsProvider: resolveDefaultTtsProvider(),
+    speakerAllowlistUserIds: [discordUserId],
   };
 
   activeSessionByGuild.set(guildId, session);
@@ -133,6 +135,53 @@ export function setVoiceSessionTtsProvider(guildId: string, provider: TtsProvide
   if (!session) return null;
 
   session.ttsProvider = provider;
+  return session;
+}
+
+function normalizeSpeakerAllowlist(session: VoiceSessionState): string[] {
+  const ids = new Set<string>();
+  ids.add(session.createdByUserId);
+  for (const userId of session.speakerAllowlistUserIds) {
+    const trimmed = userId.trim();
+    if (trimmed) ids.add(trimmed);
+  }
+  session.speakerAllowlistUserIds = Array.from(ids);
+  return session.speakerAllowlistUserIds;
+}
+
+export function listVoiceSessionSpeakers(guildId: string): string[] {
+  const session = activeSessionByGuild.get(guildId);
+  if (!session) return [];
+  return [...normalizeSpeakerAllowlist(session)];
+}
+
+export function isVoiceSessionSpeakerAllowed(guildId: string, discordUserId: string): boolean {
+  const session = activeSessionByGuild.get(guildId);
+  if (!session) return false;
+  return normalizeSpeakerAllowlist(session).includes(discordUserId.trim());
+}
+
+export function addVoiceSessionSpeaker(guildId: string, discordUserId: string): VoiceSessionState | null {
+  const session = activeSessionByGuild.get(guildId);
+  const trimmed = discordUserId.trim();
+  if (!session || !trimmed) return session ?? null;
+
+  normalizeSpeakerAllowlist(session);
+  if (!session.speakerAllowlistUserIds.includes(trimmed)) {
+    session.speakerAllowlistUserIds.push(trimmed);
+  }
+  return session;
+}
+
+export function removeVoiceSessionSpeaker(guildId: string, discordUserId: string): VoiceSessionState | null {
+  const session = activeSessionByGuild.get(guildId);
+  const trimmed = discordUserId.trim();
+  if (!session || !trimmed) return session ?? null;
+
+  normalizeSpeakerAllowlist(session);
+  if (trimmed === session.createdByUserId) return session;
+  session.speakerAllowlistUserIds = session.speakerAllowlistUserIds.filter((userId) => userId !== trimmed);
+  normalizeSpeakerAllowlist(session);
   return session;
 }
 

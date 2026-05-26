@@ -7,6 +7,9 @@ import {
   Guild,
   type Message,
   MessageFlags,
+  PermissionFlagsBits,
+  StringSelectMenuInteraction,
+  UserSelectMenuInteraction,
 } from 'discord.js';
 import {
   createRequestTempDir,
@@ -27,11 +30,15 @@ import {
   getActiveGuildJoinUser,
   getActiveGuildListenUser,
   getVoiceSession,
+  addVoiceSessionSpeaker,
+  isVoiceSessionSpeakerAllowed,
   markVoiceSessionUsed,
+  removeVoiceSessionSpeaker,
   setVoiceSessionBotSpeaking,
   setVoiceSessionVerbose,
   setVoiceSessionListenMode,
   setVoiceSessionTtsProvider,
+  type VoiceSessionState,
 } from '../state.js';
 import { getOrCreateConnectionFromMember } from '../voice.js';
 import {
@@ -40,11 +47,20 @@ import {
   VOICE_TTS_HERMES,
   VOICE_TTS_PIPER,
   VOICE_TTS_SAY,
+  VOICE_ALLOWLIST_ADD,
+  VOICE_ALLOWLIST_ADD_SELECT,
+  VOICE_ALLOWLIST_DONE,
+  VOICE_ALLOWLIST_REMOVE,
+  VOICE_ALLOWLIST_REMOVE_SELECT,
   VOICE_VERBOSE_DISABLE,
   VOICE_VERBOSE_ENABLE,
   buildInfoEmbed,
   buildJoinControls,
   buildJoinEmbed,
+  buildVoiceAllowlistAddSelect,
+  buildVoiceAllowlistButtons,
+  buildVoiceAllowlistEmbed,
+  buildVoiceAllowlistRemoveSelect,
   buildVoiceVerboseButtons,
   buildVoiceVerbosePromptEmbed,
   formatTtsProvider,
@@ -68,6 +84,7 @@ type AutoListenController = {
   playbackAbortController: AbortController | null;
   statusMessage: Message | null;
   pendingAutoInterruptTimer: NodeJS.Timeout | null;
+  pendingAutoInterruptUserId: string | null;
 };
 type VoiceRunPhase = 'thinking' | 'synthesizing' | 'playing';
 type ActiveVoiceRun = {
@@ -137,6 +154,35 @@ function interruptAutoPlayback(guildId: string): 'interrupted' | 'busy' | 'not-p
 
   playbackAbortController.abort();
   return 'interrupted';
+}
+
+function canManageVoiceAllowlist(interaction: ChatInputCommandInteraction | ButtonInteraction | UserSelectMenuInteraction | StringSelectMenuInteraction, session: VoiceSessionState): boolean {
+  if (interaction.user.id === session.createdByUserId) return true;
+  const permissions = interaction.memberPermissions;
+  return Boolean(permissions?.has(PermissionFlagsBits.Administrator) || permissions?.has(PermissionFlagsBits.ManageChannels));
+}
+
+async function requireVoiceAllowlistManager(
+  interaction: ChatInputCommandInteraction | ButtonInteraction | UserSelectMenuInteraction | StringSelectMenuInteraction,
+  session: VoiceSessionState,
+): Promise<boolean> {
+  if (canManageVoiceAllowlist(interaction, session)) return true;
+  const payload = { content: 'Only the session creator or a server manager can edit this voice allowlist.', components: [] };
+  if (interaction.isButton() || interaction.isStringSelectMenu() || interaction.isUserSelectMenu()) {
+    await interaction.reply({ ...payload, flags: MessageFlags.Ephemeral }).catch(async () => {
+      await interaction.followUp({ ...payload, flags: MessageFlags.Ephemeral });
+    });
+    return false;
+  }
+  await interaction.editReply(payload);
+  return false;
+}
+
+function buildVoiceAllowlistMessage(session: VoiceSessionState) {
+  return {
+    embeds: [buildVoiceAllowlistEmbed(session)],
+    components: buildVoiceAllowlistButtons(session),
+  };
 }
 
 export async function handleJoin(interaction: ChatInputCommandInteraction) {
@@ -253,6 +299,11 @@ export async function handleListen(interaction: ChatInputCommandInteraction) {
       return;
     }
     await interaction.editReply('No Hermes voice session is active yet. Run `/join` first.');
+    return;
+  }
+
+  if (!isVoiceSessionSpeakerAllowed(guildId, interaction.user.id)) {
+    await interaction.editReply('You are not allowed to speak for this voice session. Ask the session creator or a server manager to add you with `/voice-allowlist`.');
     return;
   }
 
@@ -530,6 +581,28 @@ export async function handleVoiceVerbose(interaction: ChatInputCommandInteractio
   });
 }
 
+export async function handleVoiceAllowlist(interaction: ChatInputCommandInteraction) {
+  if (!interaction.deferred && !interaction.replied) {
+    await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+  }
+
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) {
+    await interaction.editReply({ content: 'This command only works inside a server.' });
+    return;
+  }
+
+  const session = getVoiceSession(guildId);
+  if (!session) {
+    await interaction.editReply({ content: 'No Hermes voice session is active yet. Run `/join` first.' });
+    return;
+  }
+
+  if (!await requireVoiceAllowlistManager(interaction, session)) return;
+
+  await interaction.editReply(buildVoiceAllowlistMessage(session));
+}
+
 export async function handleInterrupt(interaction: ChatInputCommandInteraction) {
   const guildId = interaction.guildId;
   if (!guildId || !interaction.guild) {
@@ -611,6 +684,62 @@ export async function handleStopVoice(interaction: ChatInputCommandInteraction) 
   });
 }
 
+export async function handleNewVoiceSession(interaction: ChatInputCommandInteraction) {
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) {
+    await interaction.editReply({ content: 'This command only works inside a server.' });
+    return;
+  }
+
+  const connection = getVoiceConnection(guildId);
+  const channelId = connection?.joinConfig.channelId ?? null;
+  if (!connection || !channelId) {
+    await interaction.editReply({ content: 'The bot is not connected to voice right now. Run `/join` first.' });
+    return;
+  }
+
+  const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member || member.voice.channelId !== channelId) {
+    await interaction.editReply({ content: 'You need to be in the same voice channel as the bot to start a new voice session.' });
+    return;
+  }
+
+  const previousSession = getVoiceSession(guildId);
+  stopActiveVoiceRun(guildId);
+  const requestedKey = buildVoiceSessionKey(guildId, channelId);
+  const hermesSession = createHermesSession(requestedKey);
+  const nextSession = createVoiceSession(guildId, channelId, interaction.user.id, {
+    sessionKey: hermesSession.sessionKey,
+    hermesResponseId: hermesSession.responseId,
+  });
+
+  if (previousSession) {
+    setVoiceSessionTtsProvider(guildId, previousSession.ttsProvider);
+    setVoiceSessionListenMode(guildId, previousSession.listenMode, { textChannelId: previousSession.autoListenTextChannelId });
+    if (previousSession.verboseEnabled) {
+      setVoiceSessionVerbose(guildId, true, { threadId: previousSession.verboseThreadId });
+    }
+  }
+
+  const updatedSession = getVoiceSession(guildId) ?? nextSession;
+  if (updatedSession.listenMode === 'auto') {
+    enableAutoListen(guildId, interaction.guild, connection);
+  } else {
+    disposeAutoListen(guildId);
+  }
+
+  await interaction.editReply({
+    embeds: [
+      buildJoinEmbed(updatedSession, {
+        channelId,
+        created: true,
+        issues: summarizeHealthIssues(collectBridgeHealth()),
+      }),
+    ],
+    components: buildJoinControls(updatedSession),
+  });
+}
+
 function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionContext['guild']>, connection: VoiceConnection) {
   disposeAutoListen(guildId);
 
@@ -621,12 +750,15 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
     playbackAbortController: null,
     statusMessage: null,
     pendingAutoInterruptTimer: null,
+    pendingAutoInterruptUserId: null,
   };
 
   const clearPendingAutoInterrupt = () => {
-    if (!controller.pendingAutoInterruptTimer) return;
-    clearTimeout(controller.pendingAutoInterruptTimer);
+    if (controller.pendingAutoInterruptTimer) {
+      clearTimeout(controller.pendingAutoInterruptTimer);
+    }
     controller.pendingAutoInterruptTimer = null;
+    controller.pendingAutoInterruptUserId = null;
   };
 
   const upsertAutoModeMessage = async (payload: { embed?: EmbedBuilder; content?: string }) => {
@@ -656,11 +788,16 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
   const onSpeakingStart = (userId: string) => {
     const session = getVoiceSession(guildId);
     if (!session || session.listenMode !== 'auto') return;
-    if (userId !== session.createdByUserId) return;
+    if (!isVoiceSessionSpeakerAllowed(guildId, userId)) return;
     if (session.botSpeaking) {
       if (controller.pendingAutoInterruptTimer) return;
+      const minSpeechMs = getAutoInterruptMinSpeechMs();
+      controller.pendingAutoInterruptUserId = userId;
       controller.pendingAutoInterruptTimer = setTimeout(() => {
         controller.pendingAutoInterruptTimer = null;
+        controller.pendingAutoInterruptUserId = null;
+        const startedAt = receiver.speaking.users.get(userId);
+        if (!startedAt || Date.now() - startedAt < minSpeechMs) return;
         const currentSession = getVoiceSession(guildId);
         if (!currentSession || currentSession.listenMode !== 'auto' || !currentSession.botSpeaking) return;
         if (interruptAutoPlayback(guildId) === 'interrupted') {
@@ -668,7 +805,7 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
             content: 'Interrupted current playback. Speak again when the bot is idle.',
           });
         }
-      }, getAutoInterruptMinSpeechMs());
+      }, minSpeechMs);
       return;
     }
     clearPendingAutoInterrupt();
@@ -710,8 +847,10 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
 
   const onSpeakingEnd = (userId: string) => {
     const session = getVoiceSession(guildId);
-    if (!session || userId !== session.createdByUserId) return;
-    clearPendingAutoInterrupt();
+    if (!session || !isVoiceSessionSpeakerAllowed(guildId, userId)) return;
+    if (controller.pendingAutoInterruptUserId === userId) {
+      clearPendingAutoInterrupt();
+    }
   };
 
   receiver.speaking.on('start', onSpeakingStart);
@@ -764,6 +903,120 @@ export async function handleVoiceVerboseButton(interaction: ButtonInteraction) {
     embeds: [buildVoiceVerbosePromptEmbed(updated)],
     components: buildVoiceVerboseButtons(true),
   });
+}
+
+export async function handleVoiceAllowlistButton(interaction: ButtonInteraction) {
+  if (!interaction.customId.startsWith('voice-allowlist:')) return;
+
+  await interaction.deferUpdate();
+
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) return;
+
+  const session = getVoiceSession(guildId);
+  if (!session) {
+    await interaction.editReply({
+      content: 'The voice session is no longer active. Run `/join` again first.',
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (!canManageVoiceAllowlist(interaction, session)) {
+    await interaction.followUp({
+      content: 'Only the session creator or a server manager can edit this voice allowlist.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (interaction.customId === VOICE_ALLOWLIST_DONE) {
+    await interaction.editReply({
+      content: 'Voice allowlist closed.',
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (interaction.customId === VOICE_ALLOWLIST_ADD) {
+    await interaction.editReply({
+      embeds: [buildVoiceAllowlistEmbed(session)],
+      components: buildVoiceAllowlistAddSelect(),
+    });
+    return;
+  }
+
+  if (interaction.customId === VOICE_ALLOWLIST_REMOVE) {
+    const removable = session.speakerAllowlistUserIds.filter((userId) => userId !== session.createdByUserId);
+    await interaction.editReply({
+      embeds: [buildVoiceAllowlistEmbed(session)],
+      components: removable.length > 0 ? buildVoiceAllowlistRemoveSelect(session) : buildVoiceAllowlistButtons(session),
+    });
+  }
+}
+
+export async function handleVoiceAllowlistUserSelect(interaction: UserSelectMenuInteraction) {
+  if (interaction.customId !== VOICE_ALLOWLIST_ADD_SELECT) return;
+
+  await interaction.deferUpdate();
+
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) return;
+
+  const session = getVoiceSession(guildId);
+  if (!session) {
+    await interaction.editReply({
+      content: 'The voice session is no longer active. Run `/join` again first.',
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (!canManageVoiceAllowlist(interaction, session)) {
+    await interaction.followUp({
+      content: 'Only the session creator or a server manager can edit this voice allowlist.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const selectedUserId = interaction.values[0];
+  const updated = selectedUserId ? addVoiceSessionSpeaker(guildId, selectedUserId) : session;
+  await interaction.editReply(buildVoiceAllowlistMessage(updated ?? session));
+}
+
+export async function handleVoiceAllowlistRemoveSelect(interaction: StringSelectMenuInteraction) {
+  if (interaction.customId !== VOICE_ALLOWLIST_REMOVE_SELECT) return;
+
+  await interaction.deferUpdate();
+
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) return;
+
+  const session = getVoiceSession(guildId);
+  if (!session) {
+    await interaction.editReply({
+      content: 'The voice session is no longer active. Run `/join` again first.',
+      embeds: [],
+      components: [],
+    });
+    return;
+  }
+
+  if (!canManageVoiceAllowlist(interaction, session)) {
+    await interaction.followUp({
+      content: 'Only the session creator or a server manager can edit this voice allowlist.',
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const selectedUserId = interaction.values[0];
+  const updated = selectedUserId ? removeVoiceSessionSpeaker(guildId, selectedUserId) : session;
+  await interaction.editReply(buildVoiceAllowlistMessage(updated ?? session));
 }
 
 export async function handleJoinModeButton(interaction: ButtonInteraction) {

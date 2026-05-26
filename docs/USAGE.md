@@ -13,7 +13,10 @@ This bridge is best treated as an experimental self-hosted tool. The happy path 
 
 - `/join` - join your voice channel and create a fresh Hermes voice session for this joined connection
 - `/listen` - process exactly one spoken turn from the invoking user
+- `/stop-voice` - stop current playback, TTS generation, or an active Hermes turn
+- `/new-voice-session` - create a fresh Hermes conversation while the bot stays connected to voice
 - `/debugtext` - send a text prompt directly into the active voice session, optionally without TTS playback
+- `/voice-allowlist` - manage which Discord users may speak into the active voice session
 - `/voice-verbose` - mirror tool calls and background execution details into a separate Discord thread
 - `/leave` - disconnect the voice connection
 - `/info` - show voice status, in-memory session status, and dependency health
@@ -24,7 +27,9 @@ This bridge is best treated as an experimental self-hosted tool. The happy path 
 
 - The bridge keeps one active Hermes voice session per guild while it is connected to voice.
 - `/join` creates a fresh Hermes conversation key for that voice connection.
+- `/new-voice-session` replaces the active Hermes conversation key without disconnecting the bot.
 - Later `/listen` calls reuse the same active voice session until `/leave`.
+- Voice input is private by default: only the session creator can speak until an owner or channel manager adds more users with `/voice-allowlist`.
 - `/leave` disconnects the bot and clears the bridge's in-memory voice session reference.
 - After a bot restart, the bridge rebuilds state in memory as users interact again.
 - Hermes may keep its own CLI/API history under `~/.hermes`; this bridge does not delete it.
@@ -55,6 +60,7 @@ This bridge is best treated as an experimental self-hosted tool. The happy path 
 - Confirm the bot can stay undeafened in the channel and has the expected voice permissions.
 - Check the bot logs for `Speaking started`, `SSRC mapped`, and `First opus packet received`.
 - If the bot waits too long on room noise, lower `VOICE_MAX_CAPTURE_MS` or `VOICE_NO_SPEECH_TIMEOUT_MS`.
+- If capture stops too early between words, raise `VOICE_SILENCE_END_MS`.
 
 ### No transcription
 

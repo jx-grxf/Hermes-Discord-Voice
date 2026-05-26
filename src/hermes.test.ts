@@ -188,15 +188,21 @@ test('askHermes emits Responses API stream text and tool events', async () => {
     .map((frame) => `event: ${frame.event}\ndata: ${JSON.stringify(frame.data)}\n\n`)
     .join('');
 
-  globalThis.fetch = (async () => new Response(
-    new ReadableStream({
-      start(controller) {
-        controller.enqueue(new TextEncoder().encode(body));
-        controller.close();
-      },
-    }),
-    { status: 200 },
-  )) as typeof fetch;
+  const requests: Request[] = [];
+  globalThis.fetch = (async (input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+
+    return new Response(
+      new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(body));
+          controller.close();
+        },
+      }),
+      { status: 200 },
+    );
+  }) as typeof fetch;
   process.env.HERMES_VERBOSE_STREAM = '1';
   process.env.HERMES_API_BASE_URL = 'http://127.0.0.1:8642/v1';
 
@@ -210,6 +216,9 @@ test('askHermes emits Responses API stream text and tool events', async () => {
 
     assert.equal(result.reply, 'OK');
     assert.equal(result.responseId, 'resp_stream');
+    assert.equal(requests[0]?.headers.get('x-hermes-session-key'), 'conversation-1');
+    const requestBody = await requests[0]?.json() as { instructions?: string };
+    assert.match(requestBody.instructions ?? '', /Discord voice conversation/);
     assert.deepEqual(events, [
       { type: 'tool_started', name: 'terminal', arguments: '{"cmd":"date"}', callId: 'call_1' },
       { type: 'tool_completed', name: 'terminal', output: 'Tuesday', callId: 'call_1' },
@@ -218,6 +227,56 @@ test('askHermes emits Responses API stream text and tool events', async () => {
     ]);
   } finally {
     globalThis.fetch = originalFetch;
+    if (originalVerboseStream === undefined) delete process.env.HERMES_VERBOSE_STREAM;
+    else process.env.HERMES_VERBOSE_STREAM = originalVerboseStream;
+    if (originalBaseUrl === undefined) delete process.env.HERMES_API_BASE_URL;
+    else process.env.HERMES_API_BASE_URL = originalBaseUrl;
+  }
+});
+
+test('askHermes isolates verbose stream callback errors', async () => {
+  const originalFetch = globalThis.fetch;
+  const originalVerboseStream = process.env.HERMES_VERBOSE_STREAM;
+  const originalBaseUrl = process.env.HERMES_API_BASE_URL;
+  const originalWarn = console.warn;
+  const body = [
+    'event: response.output_text.delta',
+    'data: {"delta":"OK"}',
+    '',
+    'event: response.completed',
+    'data: {"response":{"id":"resp_stream","output":[{"content":[{"type":"output_text","text":"OK"}]}]}}',
+    '',
+  ].join('\n');
+  const warnings: unknown[] = [];
+
+  globalThis.fetch = (async () => new Response(
+    new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode(body));
+        controller.close();
+      },
+    }),
+    { status: 200 },
+  )) as typeof fetch;
+  console.warn = (...args: unknown[]) => {
+    warnings.push(args);
+  };
+  process.env.HERMES_VERBOSE_STREAM = '1';
+  process.env.HERMES_API_BASE_URL = 'http://127.0.0.1:8642/v1';
+
+  try {
+    const result = await askHermes('hello', { sessionKey: 'conversation-1', responseId: null }, {
+      onEvent: () => {
+        throw new Error('thread send failed');
+      },
+    });
+
+    assert.equal(result.reply, 'OK');
+    assert.equal(result.responseId, 'resp_stream');
+    assert.equal(warnings.length > 0, true);
+  } finally {
+    globalThis.fetch = originalFetch;
+    console.warn = originalWarn;
     if (originalVerboseStream === undefined) delete process.env.HERMES_VERBOSE_STREAM;
     else process.env.HERMES_VERBOSE_STREAM = originalVerboseStream;
     if (originalBaseUrl === undefined) delete process.env.HERMES_API_BASE_URL;

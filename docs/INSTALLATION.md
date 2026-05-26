@@ -68,9 +68,11 @@ Optional:
 
 - `TTS_PROVIDER` to choose `hermes`, `piper`, `say`, or `elevenlabs`. `.env.example` starts with `piper`; runtime fallback is `say` if unset.
 - `HERMES_TRANSPORT` optional, default `cli`; set `api` to use the local Hermes API server.
-- `HERMES_PROVIDER`, `HERMES_MODEL`, `HERMES_TOOLSETS`, and `HERMES_SKILLS` to override Hermes routing per bridge call.
+- `HERMES_PROVIDER`, `HERMES_TOOLSETS`, and `HERMES_SKILLS` override Hermes routing in CLI mode.
+- `HERMES_MODEL` applies to CLI and API mode where supported.
+- `HERMES_VOICE_INSTRUCTIONS` optional voice-specific system instruction text.
 - `HERMES_VOICE_SESSION_PREFIX` optional, default `hermes-discord-voice`; each `/join` still creates a fresh conversation key.
-- `HERMES_API_BASE_URL` and `HERMES_API_KEY` if you use `HERMES_TRANSPORT=api`.
+- `HERMES_API_BASE_URL` and `HERMES_API_KEY` if you use `HERMES_TRANSPORT=api`; API mode relies on the Hermes Gateway/API server configuration for providers, tools, and skills.
 - `HERMES_TTS_COMMAND` if you use `TTS_PROVIDER=hermes`; the command receives output path and text as arguments.
 - `TTS_VOICE` to choose the macOS `say` voice. Default: `Flo`
 - `TTS_RATE` to set the macOS `say` speaking rate. Default: `220`
@@ -87,6 +89,7 @@ Optional:
 - `WHISPER_THREADS` optional; use it if you want to give `whisper-cli` more CPU threads
 - `VOICE_NO_AUDIO_TIMEOUT_MS` optional, default `12000`
 - `VOICE_NO_SPEECH_TIMEOUT_MS` optional, default `5000`
+- `VOICE_SILENCE_END_MS` optional, default `1200`; determines how long silence must last before a spoken turn ends
 - `VOICE_MAX_CAPTURE_MS` optional, default `9000`
 - `VOICE_JOIN_ATTEMPTS` optional, default `2`
 - `VOICE_JOIN_READY_TIMEOUT_MS` optional, default `10000`

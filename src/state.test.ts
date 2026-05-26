@@ -11,7 +11,11 @@ import {
   getActiveGuildJoinUser,
   getActiveGuildListenUser,
   getVoiceSession,
+  addVoiceSessionSpeaker,
+  isVoiceSessionSpeakerAllowed,
+  listVoiceSessionSpeakers,
   markVoiceSessionUsed,
+  removeVoiceSessionSpeaker,
   setVoiceSessionBotSpeaking,
   setVoiceSessionListenMode,
   setVoiceSessionTtsProvider,
@@ -40,10 +44,40 @@ test('createVoiceSession stores one active session per guild', () => {
 
   assert.equal(created.channelId, 'channel-1');
   assert.equal(created.createdByUserId, 'user-1');
+  assert.deepEqual(created.speakerAllowlistUserIds, ['user-1']);
   assert.equal(getVoiceSession('guild-1')?.hermesResponseId, 'resp_1');
   assert.equal(getVoiceSession('guild-1')?.listenMode, 'slash');
 
   clearVoiceSession('guild-1');
+});
+
+test('voice session speaker allowlist defaults to creator and supports add remove', () => {
+  createVoiceSession('guild-speakers', 'channel-1', 'user-1');
+
+  assert.deepEqual(listVoiceSessionSpeakers('guild-speakers'), ['user-1']);
+  assert.equal(isVoiceSessionSpeakerAllowed('guild-speakers', 'user-1'), true);
+  assert.equal(isVoiceSessionSpeakerAllowed('guild-speakers', 'user-2'), false);
+
+  addVoiceSessionSpeaker('guild-speakers', 'user-2');
+  addVoiceSessionSpeaker('guild-speakers', 'user-2');
+  assert.deepEqual(listVoiceSessionSpeakers('guild-speakers'), ['user-1', 'user-2']);
+  assert.equal(isVoiceSessionSpeakerAllowed('guild-speakers', 'user-2'), true);
+
+  removeVoiceSessionSpeaker('guild-speakers', 'user-2');
+  assert.deepEqual(listVoiceSessionSpeakers('guild-speakers'), ['user-1']);
+
+  clearVoiceSession('guild-speakers');
+});
+
+test('voice session speaker allowlist cannot remove creator', () => {
+  createVoiceSession('guild-speaker-owner', 'channel-1', 'user-1');
+  addVoiceSessionSpeaker('guild-speaker-owner', 'user-2');
+  removeVoiceSessionSpeaker('guild-speaker-owner', 'user-1');
+
+  assert.deepEqual(listVoiceSessionSpeakers('guild-speaker-owner'), ['user-1', 'user-2']);
+  assert.equal(isVoiceSessionSpeakerAllowed('guild-speaker-owner', 'user-1'), true);
+
+  clearVoiceSession('guild-speaker-owner');
 });
 
 test('voice session listen mode can switch to auto with a bound text channel', () => {

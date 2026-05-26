@@ -15,6 +15,7 @@ test.afterEach(() => {
   clearAllVoiceState();
   delete process.env.VOICE_NO_AUDIO_TIMEOUT_MS;
   delete process.env.VOICE_NO_SPEECH_TIMEOUT_MS;
+  delete process.env.VOICE_SILENCE_END_MS;
   delete process.env.VOICE_MAX_CAPTURE_MS;
 });
 
@@ -55,8 +56,15 @@ test('getListenTimingConfig returns sane defaults', () => {
   assert.deepEqual(getListenTimingConfig(), {
     noAudioTimeoutMs: 12_000,
     noSpeechTimeoutMs: 5_000,
+    silenceEndMs: 1_200,
     maxCaptureMs: 0,
   });
+});
+
+test('getListenTimingConfig supports silence end tuning', () => {
+  process.env.VOICE_SILENCE_END_MS = '2200';
+
+  assert.equal(getListenTimingConfig().silenceEndMs, 2_200);
 });
 
 test('getListenTimingConfig can disable hard capture cutoff', () => {

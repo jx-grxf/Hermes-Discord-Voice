@@ -22,6 +22,9 @@ export type PlaybackResult = {
 type SynthesizeSpeechOptions = {
   signal?: AbortSignal;
 };
+type ChildProcessOptions = {
+  signal?: AbortSignal;
+};
 
 export function calculatePlaybackTimeoutMs(
   durationMs: number | null,
@@ -91,7 +94,13 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === 'AbortError';
 }
 
-export async function convertPcmToWav(pcmPath: string, wavPath: string): Promise<void> {
+export async function convertPcmToWav(
+  pcmPath: string,
+  wavPath: string,
+  options: ChildProcessOptions = {},
+): Promise<void> {
+  if (options.signal?.aborted) throw abortError('Audio conversion was interrupted.');
+
   await new Promise<void>((resolve, reject) => {
     const ffmpeg = spawn('ffmpeg', [
       '-f', 's16le',
@@ -104,8 +113,34 @@ export async function convertPcmToWav(pcmPath: string, wavPath: string): Promise
       wavPath,
       '-y',
     ]);
-    ffmpeg.on('error', reject);
-    ffmpeg.on('close', (code) => (code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}`))));
+    let stderr = '';
+    let aborted = false;
+    let killTimer: NodeJS.Timeout | null = null;
+
+    const onAbort = () => {
+      aborted = true;
+      ffmpeg.kill('SIGTERM');
+      killTimer = setTimeout(() => ffmpeg.kill('SIGKILL'), 2_000);
+    };
+
+    options.signal?.addEventListener('abort', onAbort, { once: true });
+    ffmpeg.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    ffmpeg.on('error', (error) => {
+      options.signal?.removeEventListener('abort', onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      reject(error);
+    });
+    ffmpeg.on('close', (code) => {
+      options.signal?.removeEventListener('abort', onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      if (aborted || options.signal?.aborted) {
+        reject(abortError('Audio conversion was interrupted.'));
+        return;
+      }
+      code === 0 ? resolve() : reject(new Error(`ffmpeg exited with code ${code}: ${stderr || 'no additional details'}`));
+    });
   });
 }
 
@@ -194,9 +229,14 @@ export function buildWhisperCliArgs(modelPath: string, wavPath: string, transcri
   ];
 }
 
-export async function transcribeWav(wavPath: string, transcriptBasePath: string): Promise<string> {
+export async function transcribeWav(
+  wavPath: string,
+  transcriptBasePath: string,
+  options: ChildProcessOptions = {},
+): Promise<string> {
   const modelPath = getWhisperModelPath();
   if (!fs.existsSync(modelPath)) throw new Error(`Whisper model missing: ${modelPath}`);
+  if (options.signal?.aborted) throw abortError('Whisper transcription was interrupted.');
 
   return await new Promise<string>((resolve, reject) => {
     const proc = spawn('whisper-cli', buildWhisperCliArgs(modelPath, wavPath, transcriptBasePath), {
@@ -204,9 +244,27 @@ export async function transcribeWav(wavPath: string, transcriptBasePath: string)
     });
 
     let stderr = '';
+    let aborted = false;
+    let killTimer: NodeJS.Timeout | null = null;
+    const onAbort = () => {
+      aborted = true;
+      proc.kill('SIGTERM');
+      killTimer = setTimeout(() => proc.kill('SIGKILL'), 2_000);
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
     proc.stderr.on('data', (d) => (stderr += d.toString()));
-    proc.on('error', reject);
+    proc.on('error', (error) => {
+      options.signal?.removeEventListener('abort', onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      reject(error);
+    });
     proc.on('close', (code) => {
+      options.signal?.removeEventListener('abort', onAbort);
+      if (killTimer) clearTimeout(killTimer);
+      if (aborted || options.signal?.aborted) {
+        reject(abortError('Whisper transcription was interrupted.'));
+        return;
+      }
       if (code !== 0) return reject(new Error(`whisper-cli exited with code ${code}: ${stderr}`));
       const txtPath = `${transcriptBasePath}.txt`;
       if (!fs.existsSync(txtPath)) return resolve('');

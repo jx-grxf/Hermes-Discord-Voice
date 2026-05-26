@@ -7,6 +7,7 @@ import {
   collectBridgeHealth,
   collectHermesApiHealth,
 } from './diagnostics.js';
+import { getHermesTransport } from './hermes.js';
 
 dotenv.config({ override: true, quiet: true });
 
@@ -25,11 +26,6 @@ function printSection(title: string, rows: DoctorRow[]) {
       console.log(`       ${row.detail}`);
     }
   }
-}
-
-function getHermesTransport(): string {
-  const configured = process.env.HERMES_TRANSPORT?.trim().toLowerCase();
-  return configured === 'api' ? 'api' : 'cli';
 }
 
 function checkHermesCli(): DoctorRow {

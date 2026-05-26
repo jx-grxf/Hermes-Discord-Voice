@@ -12,8 +12,13 @@ import {
   handleJoinModeButton,
   handleLeave,
   handleListen,
+  handleNewVoiceSession,
   handleStopVoice,
   handleVoiceTtsButton,
+  handleVoiceAllowlist,
+  handleVoiceAllowlistButton,
+  handleVoiceAllowlistRemoveSelect,
+  handleVoiceAllowlistUserSelect,
   handleVoiceVerbose,
   handleVoiceVerboseButton,
 } from './discord/handlers.js';
@@ -44,8 +49,10 @@ const commands = [
   new SlashCommandBuilder().setName('listen').setDescription('Listen, transcribe, and reply in voice'),
   new SlashCommandBuilder().setName('interrupt').setDescription('Stop the current Auto-listen playback'),
   new SlashCommandBuilder().setName('stop-voice').setDescription('Stop the current voice playback and Hermes run'),
+  new SlashCommandBuilder().setName('new-voice-session').setDescription('Start a fresh Hermes voice session without leaving voice'),
   new SlashCommandBuilder().setName('info').setDescription('Show bridge status and dependency health'),
   new SlashCommandBuilder().setName('help').setDescription('Open the interactive help menu'),
+  new SlashCommandBuilder().setName('voice-allowlist').setDescription('Manage who can speak to the active voice session'),
   new SlashCommandBuilder().setName('voice-verbose').setDescription('Configure verbose tool/thread streaming for the active voice session'),
   new SlashCommandBuilder()
     .setName('debugtext')
@@ -249,6 +256,11 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
+      if (interaction.commandName === 'voice-allowlist') {
+        await handleVoiceAllowlist(interaction);
+        return;
+      }
+
       if (interaction.commandName === 'leave') {
         await handleLeave(interaction);
         return;
@@ -266,6 +278,11 @@ client.on('interactionCreate', async (interaction) => {
 
       if (interaction.commandName === 'stop-voice') {
         await handleStopVoice(interaction);
+        return;
+      }
+
+      if (interaction.commandName === 'new-voice-session') {
+        await handleNewVoiceSession(interaction);
         return;
       }
 
@@ -299,7 +316,26 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
+      if (interaction.customId.startsWith('voice-allowlist:')) {
+        await handleVoiceAllowlistButton(interaction);
+        return;
+      }
+
       await handleHelpButton(interaction);
+    }
+
+    if (interaction.isUserSelectMenu()) {
+      if (interaction.customId.startsWith('voice-allowlist:')) {
+        await handleVoiceAllowlistUserSelect(interaction);
+      }
+      return;
+    }
+
+    if (interaction.isStringSelectMenu()) {
+      if (interaction.customId.startsWith('voice-allowlist:')) {
+        await handleVoiceAllowlistRemoveSelect(interaction);
+      }
+      return;
     }
 
   } catch (err) {

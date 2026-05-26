@@ -1,4 +1,11 @@
-import { ActionRowBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } from 'discord.js';
+import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
+  EmbedBuilder,
+  StringSelectMenuBuilder,
+  UserSelectMenuBuilder,
+} from 'discord.js';
 import { collectBridgeHealth, summarizeHealthIssues } from '../diagnostics.js';
 import { getActiveGuildJoinUser, getActiveGuildListenUser, getVoiceSession, type VoiceSessionState } from '../state.js';
 import { getVoiceConnection } from '@discordjs/voice';
@@ -19,6 +26,11 @@ export const VOICE_TTS_SAY = 'voice-tts:say';
 export const VOICE_TTS_PIPER = 'voice-tts:piper';
 export const VOICE_TTS_ELEVENLABS = 'voice-tts:elevenlabs';
 export const VOICE_TTS_HERMES = 'voice-tts:hermes';
+export const VOICE_ALLOWLIST_ADD = 'voice-allowlist:add';
+export const VOICE_ALLOWLIST_REMOVE = 'voice-allowlist:remove';
+export const VOICE_ALLOWLIST_DONE = 'voice-allowlist:done';
+export const VOICE_ALLOWLIST_ADD_SELECT = 'voice-allowlist:add-select';
+export const VOICE_ALLOWLIST_REMOVE_SELECT = 'voice-allowlist:remove-select';
 
 export function formatTtsProvider(provider: TtsProvider): string {
   if (provider === 'hermes') return 'Hermes';
@@ -91,6 +103,101 @@ export function buildVoiceVerbosePromptEmbed(session: VoiceSessionState) {
     );
 }
 
+function listSpeakerIds(session: VoiceSessionState): string[] {
+  return Array.from(new Set([session.createdByUserId, ...session.speakerAllowlistUserIds]));
+}
+
+function listRemovableSpeakerIds(session: VoiceSessionState): string[] {
+  return listSpeakerIds(session).filter((userId) => userId !== session.createdByUserId);
+}
+
+function formatSpeakerAccess(session: VoiceSessionState): string {
+  const speakers = listSpeakerIds(session);
+  return speakers
+    .map((userId) => userId === session.createdByUserId ? `<@${userId}> (creator)` : `<@${userId}>`)
+    .join('\n');
+}
+
+export function buildVoiceAllowlistEmbed(session: VoiceSessionState) {
+  const removableCount = listRemovableSpeakerIds(session).length;
+  return new EmbedBuilder()
+    .setTitle('Voice allowlist')
+    .setColor(0x5865f2)
+    .setDescription('Only users listed here can trigger voice turns for the active session.')
+    .addFields(
+      {
+        name: 'Allowed speakers',
+        value: formatSpeakerAccess(session),
+        inline: false,
+      },
+      {
+        name: 'Management',
+        value: removableCount > 0
+          ? 'Use the buttons below to add or remove allowed speakers.'
+          : 'Only the creator is currently allowed. Add a user before removal is available.',
+        inline: false,
+      },
+      {
+        name: 'Scope',
+        value: 'This allowlist is in memory and resets when the voice session is cleared.',
+        inline: false,
+      },
+    );
+}
+
+export function buildVoiceAllowlistButtons(session: VoiceSessionState) {
+  const hasRemovableSpeakers = listRemovableSpeakerIds(session).length > 0;
+  return [
+    new ActionRowBuilder<ButtonBuilder>().addComponents(
+      new ButtonBuilder()
+        .setCustomId(VOICE_ALLOWLIST_ADD)
+        .setLabel('Elevate user')
+        .setStyle(ButtonStyle.Primary),
+      new ButtonBuilder()
+        .setCustomId(VOICE_ALLOWLIST_REMOVE)
+        .setLabel('Delete user from allowlist')
+        .setStyle(ButtonStyle.Danger)
+        .setDisabled(!hasRemovableSpeakers),
+      new ButtonBuilder()
+        .setCustomId(VOICE_ALLOWLIST_DONE)
+        .setLabel('Done')
+        .setStyle(ButtonStyle.Secondary),
+    ),
+  ];
+}
+
+export function buildVoiceAllowlistAddSelect() {
+  return [
+    new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
+      new UserSelectMenuBuilder()
+        .setCustomId(VOICE_ALLOWLIST_ADD_SELECT)
+        .setPlaceholder('Select a user to allow')
+        .setMinValues(1)
+        .setMaxValues(1),
+    ),
+  ];
+}
+
+export function buildVoiceAllowlistRemoveSelect(session: VoiceSessionState) {
+  const removable = listRemovableSpeakerIds(session).slice(0, 25);
+  return [
+    new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+      new StringSelectMenuBuilder()
+        .setCustomId(VOICE_ALLOWLIST_REMOVE_SELECT)
+        .setPlaceholder('Select an allowed user to remove')
+        .setMinValues(1)
+        .setMaxValues(1)
+        .addOptions(
+          removable.map((userId) => ({
+            label: userId,
+            value: userId,
+            description: `Remove <@${userId}> from this voice session`,
+          })),
+        ),
+    ),
+  ];
+}
+
 export function buildJoinModeButtons(activeMode: 'slash' | 'auto') {
   return [
     new ActionRowBuilder<ButtonBuilder>().addComponents(
@@ -150,6 +257,11 @@ export function buildJoinEmbed(session: VoiceSessionState, options: {
         inline: true,
       },
       {
+        name: 'Speakers',
+        value: formatSpeakerAccess(session),
+        inline: false,
+      },
+      {
         name: 'Session key',
         value: summarizeSessionKey(session.sessionKey),
         inline: false,
@@ -189,6 +301,7 @@ export function buildInfoEmbed(guildId: string | null, userId: string): EmbedBui
         `Key: ${summarizeSessionKey(session.sessionKey)}`,
         `Id: ${summarizeSessionId(session.hermesResponseId)}`,
         `Created by: \`${session.createdByUserId}\``,
+        `Speakers: ${listSpeakerIds(session).map((userId) => `<@${userId}>`).join(', ')}`,
         `Age: ${formatAge(Date.now() - session.createdAt)}`,
         session.lastUsedAt ? `Last used: ${formatAge(Date.now() - session.lastUsedAt)}` : 'Last used: not yet',
       ]

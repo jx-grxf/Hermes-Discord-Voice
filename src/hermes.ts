@@ -69,7 +69,7 @@ function getHermesCli(): string {
   return process.env.HERMES_CLI?.trim() || 'hermes';
 }
 
-function getHermesTransport(): 'api' | 'cli' {
+export function getHermesTransport(): 'api' | 'cli' {
   const configured = process.env.HERMES_TRANSPORT?.trim().toLowerCase();
   if (configured === 'api') return 'api';
   if (configured === 'cli') return 'cli';
@@ -101,12 +101,18 @@ export function isHermesVerboseStreamingEnabled(): boolean {
   return isTruthy(process.env.HERMES_VERBOSE_STREAM);
 }
 
-function getHermesApiHeaders(extra: Record<string, string> = {}): Record<string, string> {
+function getHermesApiHeaders(extra: Record<string, string> = {}, sessionKey?: string): Record<string, string> {
   const key = process.env.HERMES_API_KEY?.trim();
   return {
     ...(key ? { Authorization: `Bearer ${key}` } : {}),
+    ...(sessionKey ? { 'X-Hermes-Session-Key': sessionKey } : {}),
     ...extra,
   };
+}
+
+function getHermesVoiceInstructions(): string {
+  return process.env.HERMES_VOICE_INSTRUCTIONS?.trim()
+    || 'You are replying in a Discord voice conversation. Keep answers concise, natural to speak aloud, and avoid long lists or code blocks unless the user explicitly asks for them.';
 }
 
 function hermesInterruptedError(): Error {
@@ -325,13 +331,14 @@ async function callHermesResponsesApi(
     const response = await fetch(`${getHermesApiBase()}/responses`, {
       method: 'POST',
       headers: {
-        ...getHermesApiHeaders(),
+        ...getHermesApiHeaders({}, session.sessionKey),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: getHermesModel(),
         input: message,
         conversation: session.sessionKey,
+        instructions: getHermesVoiceInstructions(),
       }),
       signal: timeoutController.signal,
     });
@@ -435,7 +442,11 @@ async function emitHermesStreamEvent(
   event: HermesStreamEvent,
 ): Promise<void> {
   if (!callback) return;
-  await callback(event);
+  try {
+    await callback(event);
+  } catch (error) {
+    console.warn('Hermes stream event callback failed', error);
+  }
 }
 
 async function handleResponsesSseMessage(
@@ -511,13 +522,14 @@ async function callHermesResponsesApiStream(
     response = await fetch(`${getHermesApiBase()}/responses`, {
       method: 'POST',
       headers: {
-        ...getHermesApiHeaders({ Accept: 'text/event-stream' }),
+        ...getHermesApiHeaders({ Accept: 'text/event-stream' }, session.sessionKey),
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
         model: getHermesModel(),
         input: message,
         conversation: session.sessionKey,
+        instructions: getHermesVoiceInstructions(),
         stream: true,
       }),
       signal: timeoutController.signal,

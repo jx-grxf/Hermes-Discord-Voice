@@ -5,6 +5,10 @@ import {
   buildJoinControls,
   buildJoinEmbed,
   buildVoiceTtsButtons,
+  buildVoiceAllowlistAddSelect,
+  buildVoiceAllowlistButtons,
+  buildVoiceAllowlistEmbed,
+  buildVoiceAllowlistRemoveSelect,
   formatTtsProvider,
   buildVoiceVerboseButtons,
   buildVoiceVerbosePromptEmbed,
@@ -14,6 +18,11 @@ import {
   VOICE_TTS_HERMES,
   VOICE_TTS_PIPER,
   VOICE_TTS_SAY,
+  VOICE_ALLOWLIST_ADD,
+  VOICE_ALLOWLIST_ADD_SELECT,
+  VOICE_ALLOWLIST_DONE,
+  VOICE_ALLOWLIST_REMOVE,
+  VOICE_ALLOWLIST_REMOVE_SELECT,
   VOICE_VERBOSE_DISABLE,
   VOICE_VERBOSE_ENABLE,
 } from './embeds.js';
@@ -57,9 +66,10 @@ test('buildJoinEmbed includes mode, tts, and warning fields', () => {
 
   assert.equal(embed.title, 'Voice bridge ready');
   const names = embed.fields?.map((field) => field.name) ?? [];
-  assert.deepEqual(names, ['Voice', 'Mode', 'Verbose', 'TTS', 'Session key', 'Session id', 'Next', 'Warnings']);
+  assert.deepEqual(names, ['Voice', 'Mode', 'Verbose', 'TTS', 'Speakers', 'Session key', 'Session id', 'Next', 'Warnings']);
   assert.match(embed.fields?.find((field) => field.name === 'Mode')?.value ?? '', /Slash-to-talk/);
   assert.match(embed.fields?.find((field) => field.name === 'TTS')?.value ?? '', /Say|Piper|ElevenLabs|Hermes/);
+  assert.match(embed.fields?.find((field) => field.name === 'Speakers')?.value ?? '', /user-1/);
 });
 
 test('formatTtsProvider labels Hermes provider', () => {
@@ -74,4 +84,28 @@ test('buildVoiceVerbosePromptEmbed reflects active thread state', () => {
   const embed = buildVoiceVerbosePromptEmbed(session).toJSON();
   assert.equal(embed.title, 'Voice verbose mode');
   assert.match(embed.fields?.find((field) => field.name === 'Current status')?.value ?? '', /thread-1/);
+});
+
+test('voice allowlist embed and controls expose add remove actions', () => {
+  const session = createVoiceSession('guild-1', 'channel-1', 'user-1');
+  session.speakerAllowlistUserIds.push('user-2');
+
+  const embed = buildVoiceAllowlistEmbed(session).toJSON();
+  const buttons = buildVoiceAllowlistButtons(session)[0].toJSON();
+  const addSelect = buildVoiceAllowlistAddSelect()[0].toJSON();
+  const removeSelect = buildVoiceAllowlistRemoveSelect(session)[0].toJSON();
+
+  assert.equal(embed.title, 'Voice allowlist');
+  assert.match(embed.fields?.find((field) => field.name === 'Allowed speakers')?.value ?? '', /user-1/);
+  assert.deepEqual(getCustomIds(buttons), [VOICE_ALLOWLIST_ADD, VOICE_ALLOWLIST_REMOVE, VOICE_ALLOWLIST_DONE]);
+  assert.equal(addSelect.components[0].custom_id, VOICE_ALLOWLIST_ADD_SELECT);
+  assert.equal(removeSelect.components[0].custom_id, VOICE_ALLOWLIST_REMOVE_SELECT);
+});
+
+test('voice allowlist remove action is disabled when only creator is allowed', () => {
+  const session = createVoiceSession('guild-1', 'channel-1', 'user-1');
+  const buttons = buildVoiceAllowlistButtons(session)[0].toJSON();
+  const removeButton = buttons.components.find((component) => 'custom_id' in component && component.custom_id === VOICE_ALLOWLIST_REMOVE);
+
+  assert.equal(removeButton?.disabled, true);
 });

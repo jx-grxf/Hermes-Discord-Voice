@@ -9,6 +9,8 @@ test('help commands embed lists voice verbose and debug text commands', () => {
 
   assert(names.includes('/interrupt'));
   assert(names.includes('/stop-voice'));
+  assert(names.includes('/new-voice-session'));
   assert(names.includes('/voice-verbose'));
+  assert(names.includes('/voice-allowlist'));
   assert(names.includes('/debugtext'));
 });

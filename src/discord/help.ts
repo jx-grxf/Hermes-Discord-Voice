@@ -69,6 +69,8 @@ export function buildCommandsEmbed() {
       { name: '/listen', value: 'Capture one spoken turn, send it to Hermes, and play the spoken reply.' },
       { name: '/interrupt', value: 'Stop the current Auto-listen playback.' },
       { name: '/stop-voice', value: 'Stop the current voice playback, TTS request, or Hermes run.' },
+      { name: '/new-voice-session', value: 'Start a fresh Hermes conversation while the bot stays in voice.' },
+      { name: '/voice-allowlist', value: 'Manage who can speak to the active voice session.' },
       { name: '/voice-verbose', value: 'Enable a separate Discord thread for tool calls and background execution details.' },
       { name: '/debugtext', value: 'Send plain text directly into the active voice session for debugging.' },
       { name: '/leave', value: 'Leave voice and clean up the active Hermes session.' },
