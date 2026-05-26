@@ -1,5 +1,14 @@
 # Hermes-Discord-Voice
 
+[![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
+[![Discord.js](https://img.shields.io/badge/Discord.js-14-5865F2?logo=discord&logoColor=white)](https://discord.js.org/)
+[![Whisper](https://img.shields.io/badge/Whisper-STT-412991?logo=openai&logoColor=white)](https://github.com/ggerganov/whisper.cpp)
+[![ffmpeg](https://img.shields.io/badge/ffmpeg-audio-007808?logo=ffmpeg&logoColor=white)](https://ffmpeg.org/)
+[![macOS](https://img.shields.io/badge/macOS-TTS-000000?logo=apple&logoColor=white)](https://www.apple.com/macos/)
+[![dotenv](https://img.shields.io/badge/dotenv-config-ECD53F?logo=dotenv&logoColor=black)](https://github.com/motdotla/dotenv)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 Self-hosted Discord voice bridge for Hermes. The bot joins a Discord voice channel, records a spoken turn, transcribes it locally with Whisper, sends the text to Hermes, and plays the reply back through the selected TTS provider.
 
 This project is intended for personal and small trusted Discord servers. It is not a hosted multi-tenant service.
