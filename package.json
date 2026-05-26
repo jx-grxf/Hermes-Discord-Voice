@@ -1,0 +1,52 @@
+{
+  "name": "OpenClaw-Discord-Voice",
+  "version": "1.0.4",
+  "description": "Discord voice bridge for OpenClaw with local Whisper STT and macOS TTS",
+  "main": "dist/index.js",
+  "bin": {
+    "ocvoice": "bin/ocvoice"
+  },
+  "scripts": {
+    "dev": "node scripts/run-with-project-node.cjs tsx src/index.ts",
+    "build": "node scripts/run-with-project-node.cjs tsc -p tsconfig.json",
+    "start": "node scripts/run-with-project-node.cjs node dist/index.js",
+    "doctor:bridge": "node scripts/run-with-project-node.cjs tsx src/doctor.ts",
+    "test": "node scripts/run-with-project-node.cjs node --import tsx --test src/*.test.ts src/discord/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22.12.0",
+    "npm": ">=10"
+  },
+  "keywords": [
+    "openclaw",
+    "discord",
+    "voice",
+    "whisper",
+    "typescript"
+  ],
+  "author": "Johannes Grof",
+  "license": "MIT",
+  "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/jx-grxf/OpenClaw-Discord-Voice.git"
+  },
+  "bugs": {
+    "url": "https://github.com/jx-grxf/OpenClaw-Discord-Voice/issues"
+  },
+  "homepage": "https://github.com/jx-grxf/OpenClaw-Discord-Voice#readme",
+  "dependencies": {
+    "@discordjs/voice": "^0.19.2",
+    "@snazzah/davey": "^0.1.11",
+    "discord.js": "^14.26.3",
+    "dotenv": "^17.4.2",
+    "opusscript": "^0.0.8",
+    "prism-media": "^1.3.5",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.3"
+  }
+}

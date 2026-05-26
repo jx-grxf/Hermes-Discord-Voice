@@ -1,0 +1,12 @@
+.git/
+node_modules/
+dist/
+tmp/
+coverage/
+DerivedData/
+build/
+*.o
+*.log
+.DS_Store
+.env
+models/*.bin

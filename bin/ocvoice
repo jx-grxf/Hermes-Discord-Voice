@@ -1,0 +1,8 @@
+#!/usr/bin/env node
+const { spawn } = require('child_process');
+const path = require('path');
+const cwd = path.resolve(__dirname, '..');
+const npmCmd = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const cp = spawn(npmCmd, ['run', 'dev'], { cwd, stdio: 'inherit' });
+cp.on('exit', code => process.exit(code));
+cp.on('error', err => { console.error('Failed to start npm:', err); process.exit(1); });
