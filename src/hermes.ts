@@ -26,6 +26,7 @@ export type HermesStreamEvent =
 
 export type HermesAskOptions = {
   onEvent?: (event: HermesStreamEvent) => void | Promise<void>;
+  signal?: AbortSignal;
 };
 
 type HermesRawResult = {
@@ -105,6 +106,40 @@ function getHermesApiHeaders(extra: Record<string, string> = {}): Record<string,
   return {
     ...(key ? { Authorization: `Bearer ${key}` } : {}),
     ...extra,
+  };
+}
+
+function hermesInterruptedError(): Error {
+  const error = new Error('Hermes run was interrupted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function withHermesTimeout(externalSignal: AbortSignal | undefined): {
+  signal: AbortSignal;
+  dispose: () => void;
+  wasExternalAbort: () => boolean;
+} {
+  const controller = new AbortController();
+  let externalAborted = Boolean(externalSignal?.aborted);
+  const onExternalAbort = () => {
+    externalAborted = true;
+    controller.abort();
+  };
+  if (externalSignal?.aborted) {
+    controller.abort();
+  } else {
+    externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+  }
+  const timeout = setTimeout(() => controller.abort(), getHermesTimeoutMs());
+
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timeout);
+      externalSignal?.removeEventListener('abort', onExternalAbort);
+    },
+    wasExternalAbort: () => externalAborted,
   };
 }
 
@@ -215,16 +250,36 @@ export function buildHermesCliArgs(message: string, session: HermesSessionRef): 
   return args;
 }
 
-function runHermesCli(message: string, session: HermesSessionRef): Promise<HermesRawResult> {
+function runHermesCli(message: string, session: HermesSessionRef, options: HermesAskOptions = {}): Promise<HermesRawResult> {
+  if (options.signal?.aborted) return Promise.reject(hermesInterruptedError());
+
   return new Promise<HermesRawResult>((resolve, reject) => {
     const proc = spawn(getHermesCli(), buildHermesCliArgs(message, session), {
       cwd: process.cwd(),
       env: process.env,
     });
+    let settled = false;
+    let interrupted = false;
+    let killTimer: NodeJS.Timeout | null = null;
     const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       proc.kill('SIGTERM');
+      cleanup();
       reject(new Error(`Hermes CLI timed out after ${getHermesTimeoutMs()}ms.`));
     }, getHermesTimeoutMs());
+
+    const cleanup = () => {
+      clearTimeout(timeout);
+      if (killTimer) clearTimeout(killTimer);
+      options.signal?.removeEventListener('abort', onAbort);
+    };
+    const onAbort = () => {
+      interrupted = true;
+      proc.kill('SIGTERM');
+      killTimer = setTimeout(() => proc.kill('SIGKILL'), 2_000);
+    };
+    options.signal?.addEventListener('abort', onAbort, { once: true });
 
     let stdout = '';
     let stderr = '';
@@ -235,11 +290,19 @@ function runHermesCli(message: string, session: HermesSessionRef): Promise<Herme
       stderr += chunk.toString();
     });
     proc.on('error', (error) => {
-      clearTimeout(timeout);
+      if (settled) return;
+      settled = true;
+      cleanup();
       reject(new Error(`Could not start Hermes CLI: ${error.message}`));
     });
     proc.on('close', (code) => {
-      clearTimeout(timeout);
+      if (settled) return;
+      settled = true;
+      cleanup();
+      if (interrupted || options.signal?.aborted) {
+        reject(hermesInterruptedError());
+        return;
+      }
       if (code !== 0) {
         reject(new Error(`Hermes CLI failed (exit ${code ?? 'unknown'}): ${(stderr || stdout).trim() || 'no additional details'}`));
         return;
@@ -252,12 +315,14 @@ function runHermesCli(message: string, session: HermesSessionRef): Promise<Herme
   });
 }
 
-async function callHermesResponsesApi(message: string, session: HermesSessionRef): Promise<HermesRawResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), getHermesTimeoutMs());
-  let response: Response;
+async function callHermesResponsesApi(
+  message: string,
+  session: HermesSessionRef,
+  options: HermesAskOptions = {},
+): Promise<HermesRawResult> {
+  const timeoutController = withHermesTimeout(options.signal);
   try {
-    response = await fetch(`${getHermesApiBase()}/responses`, {
+    const response = await fetch(`${getHermesApiBase()}/responses`, {
       method: 'POST',
       headers: {
         ...getHermesApiHeaders(),
@@ -268,25 +333,27 @@ async function callHermesResponsesApi(message: string, session: HermesSessionRef
         input: message,
         conversation: session.sessionKey,
       }),
-      signal: controller.signal,
+      signal: timeoutController.signal,
     });
+    const text = await response.text();
+    if (!response.ok) {
+      throw new Error(`Hermes API failed with status ${response.status}: ${text || 'no response body'}`);
+    }
+    return {
+      body: text,
+      responseId: extractHermesResponseId(text) ?? session.responseId ?? null,
+    };
   } catch (error) {
+    if (timeoutController.wasExternalAbort()) {
+      throw hermesInterruptedError();
+    }
     if (error instanceof Error && error.name === 'AbortError') {
       throw new Error(`Hermes API timed out after ${getHermesTimeoutMs()}ms.`);
     }
     throw error;
   } finally {
-    clearTimeout(timeout);
+    timeoutController.dispose();
   }
-
-  const text = await response.text();
-  if (!response.ok) {
-    throw new Error(`Hermes API failed with status ${response.status}: ${text || 'no response body'}`);
-  }
-  return {
-    body: text,
-    responseId: extractHermesResponseId(text) ?? session.responseId ?? null,
-  };
 }
 
 type SseMessage = {
@@ -438,8 +505,7 @@ async function callHermesResponsesApiStream(
   session: HermesSessionRef,
   options: HermesAskOptions,
 ): Promise<HermesRawResult> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), getHermesTimeoutMs());
+  const timeoutController = withHermesTimeout(options.signal);
   let response: Response;
   try {
     response = await fetch(`${getHermesApiBase()}/responses`, {
@@ -454,10 +520,13 @@ async function callHermesResponsesApiStream(
         conversation: session.sessionKey,
         stream: true,
       }),
-      signal: controller.signal,
+      signal: timeoutController.signal,
     });
   } catch (error) {
-    clearTimeout(timeout);
+    timeoutController.dispose();
+    if (timeoutController.wasExternalAbort()) {
+      throw hermesInterruptedError();
+    }
     if (error instanceof Error && error.name === 'AbortError') {
       throw new Error(`Hermes API stream timed out after ${getHermesTimeoutMs()}ms.`);
     }
@@ -514,8 +583,16 @@ async function callHermesResponsesApiStream(
       body,
       responseId: completed.responseId ?? session.responseId ?? null,
     };
+  } catch (error) {
+    if (timeoutController.wasExternalAbort()) {
+      throw hermesInterruptedError();
+    }
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`Hermes API stream timed out after ${getHermesTimeoutMs()}ms.`);
+    }
+    throw error;
   } finally {
-    clearTimeout(timeout);
+    timeoutController.dispose();
   }
 }
 
@@ -536,8 +613,8 @@ export async function askHermes(
   const raw = options.onEvent && isHermesVerboseStreamingEnabled()
     ? await callHermesResponsesApiStream(message, session, options)
     : getHermesTransport() === 'api'
-      ? await callHermesResponsesApi(message, session)
-      : await runHermesCli(message, session);
+      ? await callHermesResponsesApi(message, session, options)
+      : await runHermesCli(message, session, options);
   const reply = extractHermesReply(raw.body);
   if (!reply) {
     throw new Error('Hermes returned no usable reply.');

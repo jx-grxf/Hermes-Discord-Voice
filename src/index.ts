@@ -12,6 +12,7 @@ import {
   handleJoinModeButton,
   handleLeave,
   handleListen,
+  handleStopVoice,
   handleVoiceTtsButton,
   handleVoiceVerbose,
   handleVoiceVerboseButton,
@@ -42,6 +43,7 @@ const commands = [
   new SlashCommandBuilder().setName('leave').setDescription('Leave current voice channel'),
   new SlashCommandBuilder().setName('listen').setDescription('Listen, transcribe, and reply in voice'),
   new SlashCommandBuilder().setName('interrupt').setDescription('Stop the current Auto-listen playback'),
+  new SlashCommandBuilder().setName('stop-voice').setDescription('Stop the current voice playback and Hermes run'),
   new SlashCommandBuilder().setName('info').setDescription('Show bridge status and dependency health'),
   new SlashCommandBuilder().setName('help').setDescription('Open the interactive help menu'),
   new SlashCommandBuilder().setName('voice-verbose').setDescription('Configure verbose tool/thread streaming for the active voice session'),
@@ -259,6 +261,11 @@ client.on('interactionCreate', async (interaction) => {
 
       if (interaction.commandName === 'interrupt') {
         await handleInterrupt(interaction);
+        return;
+      }
+
+      if (interaction.commandName === 'stop-voice') {
+        await handleStopVoice(interaction);
         return;
       }
 

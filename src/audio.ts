@@ -19,6 +19,9 @@ export type TtsProvider = 'say' | 'elevenlabs' | 'piper' | 'hermes';
 export type PlaybackResult = {
   interrupted: boolean;
 };
+type SynthesizeSpeechOptions = {
+  signal?: AbortSignal;
+};
 
 export function calculatePlaybackTimeoutMs(
   durationMs: number | null,
@@ -288,8 +291,20 @@ export async function synthesizeWithSay(text: string, outPath: string): Promise<
   });
 }
 
-export async function synthesizeWithElevenLabs(text: string, outPath: string): Promise<void> {
+export async function synthesizeWithElevenLabs(
+  text: string,
+  outPath: string,
+  options: SynthesizeSpeechOptions = {},
+): Promise<void> {
+  if (options.signal?.aborted) throw abortError('ElevenLabs TTS was interrupted.');
+
   const controller = new AbortController();
+  let externalAborted = false;
+  const onAbort = () => {
+    externalAborted = true;
+    controller.abort();
+  };
+  options.signal?.addEventListener('abort', onAbort, { once: true });
   const timeout = setTimeout(() => controller.abort(), getElevenLabsTimeoutMs());
 
   let response: Response;
@@ -311,12 +326,16 @@ export async function synthesizeWithElevenLabs(text: string, outPath: string): P
       signal: controller.signal,
     });
   } catch (error) {
+    if (externalAborted || options.signal?.aborted) {
+      throw abortError('ElevenLabs TTS was interrupted.');
+    }
     if (error instanceof Error && error.name === 'AbortError') {
       throw new Error(`ElevenLabs TTS timed out after ${getElevenLabsTimeoutMs()}ms.`);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    options.signal?.removeEventListener('abort', onAbort);
   }
 
   if (!response.ok) {
@@ -404,14 +423,21 @@ export async function synthesizeWithPiper(text: string, outPath: string): Promis
   });
 }
 
-export async function synthesizeSpeech(text: string, outPath: string, provider: TtsProvider = getTtsProvider()): Promise<void> {
+export async function synthesizeSpeech(
+  text: string,
+  outPath: string,
+  provider: TtsProvider = getTtsProvider(),
+  options: SynthesizeSpeechOptions = {},
+): Promise<void> {
+  if (options.signal?.aborted) throw abortError('TTS was interrupted.');
+
   if (provider === 'hermes') {
     await synthesizeWithHermes(text, outPath);
     return;
   }
 
   if (provider === 'elevenlabs') {
-    await synthesizeWithElevenLabs(text, outPath);
+    await synthesizeWithElevenLabs(text, outPath, options);
     return;
   }
 

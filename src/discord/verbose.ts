@@ -8,6 +8,7 @@ type HermesTurnExecutionOptions = {
   guild: Guild;
   session: VoiceSessionState;
   transcript: string;
+  signal?: AbortSignal;
   logPrefix?: string;
 };
 
@@ -155,6 +156,7 @@ export async function runHermesTurnWithOptionalVerbose(options: HermesTurnExecut
     responseId: session.hermesResponseId,
   }, {
     onEvent: streamHandler?.handleEvent,
+    signal: options.signal,
   });
 
   if (streamHandler) {

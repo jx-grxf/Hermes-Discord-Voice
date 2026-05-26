@@ -68,12 +68,50 @@ type AutoListenController = {
   playbackAbortController: AbortController | null;
   statusMessage: Message | null;
 };
+type VoiceRunPhase = 'thinking' | 'synthesizing' | 'playing';
+type ActiveVoiceRun = {
+  abortController: AbortController;
+  phase: VoiceRunPhase;
+  source: string;
+  finish: () => void;
+  setPhase: (phase: VoiceRunPhase) => void;
+};
 
 const autoListenControllers = new Map<string, AutoListenController>();
+const activeVoiceRuns = new Map<string, ActiveVoiceRun>();
+
+function beginActiveVoiceRun(guildId: string, source: string): ActiveVoiceRun {
+  activeVoiceRuns.get(guildId)?.abortController.abort();
+
+  const abortController = new AbortController();
+  const run: ActiveVoiceRun = {
+    abortController,
+    phase: 'thinking',
+    source,
+    finish: () => {
+      if (activeVoiceRuns.get(guildId) === run) {
+        activeVoiceRuns.delete(guildId);
+      }
+    },
+    setPhase: (phase) => {
+      run.phase = phase;
+    },
+  };
+  activeVoiceRuns.set(guildId, run);
+  return run;
+}
+
+function stopActiveVoiceRun(guildId: string): ActiveVoiceRun | null {
+  const run = activeVoiceRuns.get(guildId);
+  if (!run || run.abortController.signal.aborted) return null;
+  run.abortController.abort();
+  return run;
+}
 
 function disposeAutoListen(guildId: string) {
   const controller = autoListenControllers.get(guildId);
   if (!controller) return;
+  stopActiveVoiceRun(guildId);
   controller.playbackAbortController?.abort();
   controller.dispose();
   autoListenControllers.delete(guildId);
@@ -216,50 +254,57 @@ export async function handleListen(interaction: ChatInputCommandInteraction) {
   const connection = await getOrCreateConnectionFromMember(interaction);
   if (!connection) return;
 
-  await runListenTurn({
-    guildId,
-    guild: interaction.guild,
-    requestUserId: interaction.user.id,
-    connection,
-    session,
-    startNotice: async () => {
-      const listeningEmbed = new EmbedBuilder()
-        .setTitle('Listening now')
-        .setColor(0x5865f2)
-        .setDescription('Speak a short sentence. Capture stops after about 1.2 seconds of silence.')
-        .addFields(
-          {
-            name: 'Voice session',
-            value: summarizeSessionKey(session.sessionKey),
-            inline: false,
-          },
-          {
-            name: 'Tip',
-            value: 'Speak after this message appears and avoid push-to-talk gaps at the start.',
-            inline: false,
-          },
-        );
-      await interaction.editReply({ embeds: [listeningEmbed] });
-    },
-    progressReply: async ({ embed, content }) => {
-      if (embed) {
-        await interaction.editReply({ embeds: [embed] });
-        return;
-      }
-      if (content) {
-        await interaction.editReply({ content, embeds: [] });
-      }
-    },
-    finishReply: async ({ embed, content }) => {
-      if (embed) {
-        await interaction.editReply({ embeds: [embed], content: '' });
-        return;
-      }
-      if (content) {
-        await interaction.editReply({ content, embeds: [] });
-      }
-    },
-  });
+  const run = beginActiveVoiceRun(guildId, 'listen');
+  try {
+    await runListenTurn({
+      guildId,
+      guild: interaction.guild,
+      requestUserId: interaction.user.id,
+      connection,
+      session,
+      runSignal: run.abortController.signal,
+      onRunPhase: run.setPhase,
+      startNotice: async () => {
+        const listeningEmbed = new EmbedBuilder()
+          .setTitle('Listening now')
+          .setColor(0x5865f2)
+          .setDescription('Speak a short sentence. Capture stops after about 1.2 seconds of silence.')
+          .addFields(
+            {
+              name: 'Voice session',
+              value: summarizeSessionKey(session.sessionKey),
+              inline: false,
+            },
+            {
+              name: 'Tip',
+              value: 'Speak after this message appears and avoid push-to-talk gaps at the start.',
+              inline: false,
+            },
+          );
+        await interaction.editReply({ embeds: [listeningEmbed] });
+      },
+      progressReply: async ({ embed, content }) => {
+        if (embed) {
+          await interaction.editReply({ embeds: [embed] });
+          return;
+        }
+        if (content) {
+          await interaction.editReply({ content, embeds: [] });
+        }
+      },
+      finishReply: async ({ embed, content }) => {
+        if (embed) {
+          await interaction.editReply({ embeds: [embed], content: '' });
+          return;
+        }
+        if (content) {
+          await interaction.editReply({ content, embeds: [] });
+        }
+      },
+    });
+  } finally {
+    run.finish();
+  }
 }
 
 export async function handleDebugText(interaction: ChatInputCommandInteraction) {
@@ -288,6 +333,8 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
     await interaction.editReply('Please provide some text for `/debugtext`.');
     return;
   }
+
+  const run = beginActiveVoiceRun(guildId, 'debugtext');
 
   const buildDebugEmbed = (options: {
     title: string;
@@ -361,6 +408,7 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
       session,
       transcript,
       logPrefix: '[debugtext]',
+      signal: run.abortController.signal,
     });
 
     await interaction.editReply({
@@ -398,7 +446,8 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
         const tmpDir = createRequestTempDir();
         try {
           const ttsPath = path.join(tmpDir, `reply.${getTtsOutputExtensionForProvider(session.ttsProvider)}`);
-          await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider);
+          run.setPhase('synthesizing');
+          await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider, { signal: run.abortController.signal });
           await interaction.editReply({
             embeds: [
               buildDebugEmbed({
@@ -412,7 +461,8 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
             ],
           });
           setVoiceSessionBotSpeaking(guildId, true);
-          await playAudioFile(connection, ttsPath);
+          run.setPhase('playing');
+          await playAudioFile(connection, ttsPath, { signal: run.abortController.signal });
           ttsFinalStatus = `Played via ${formatTtsProvider(session.ttsProvider)}`;
         } finally {
           setVoiceSessionBotSpeaking(guildId, false);
@@ -442,6 +492,8 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
     });
   } catch (error) {
     await interaction.editReply({ content: `Processing failed: ${formatPipelineError(error)}` });
+  } finally {
+    run.finish();
   }
 }
 
@@ -511,6 +563,44 @@ export async function handleInterrupt(interaction: ChatInputCommandInteraction) 
   await interaction.editReply({ content: 'Interrupted current playback. Speak again when the bot is idle.' });
 }
 
+export async function handleStopVoice(interaction: ChatInputCommandInteraction) {
+  const guildId = interaction.guildId;
+  if (!guildId || !interaction.guild) {
+    await interaction.editReply({ content: 'This command only works inside a server.' });
+    return;
+  }
+
+  const session = getVoiceSession(guildId);
+  if (!session) {
+    await interaction.editReply({ content: 'No Hermes voice session is active yet. Run `/join` first.' });
+    return;
+  }
+
+  const connection = getVoiceConnection(guildId);
+  if (!connection) {
+    await interaction.editReply({ content: 'The bot is not connected to voice right now. Run `/join` first.' });
+    return;
+  }
+
+  const member = await interaction.guild.members.fetch(interaction.user.id).catch(() => null);
+  if (!member || member.voice.channelId !== connection.joinConfig.channelId) {
+    await interaction.editReply({ content: 'You need to be in the same voice channel as the bot to stop the voice run.' });
+    return;
+  }
+
+  const stoppedRun = stopActiveVoiceRun(guildId);
+  if (!stoppedRun) {
+    setVoiceSessionBotSpeaking(guildId, false);
+    await interaction.editReply({ content: 'No voice run is active right now.' });
+    return;
+  }
+
+  setVoiceSessionBotSpeaking(guildId, false);
+  await interaction.editReply({
+    content: `Stopped current voice run (${stoppedRun.source}, ${stoppedRun.phase}). The voice session stays connected.`,
+  });
+}
+
 function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionContext['guild']>, connection: VoiceConnection) {
   disposeAutoListen(guildId);
 
@@ -561,14 +651,17 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
     if (controller.triggerActive || getActiveGuildListenUser(guildId)) return;
 
     controller.triggerActive = true;
+    const run = beginActiveVoiceRun(guildId, 'auto-listen');
     void runListenTurn({
       guildId,
       guild,
       requestUserId: userId,
       connection,
       session,
+      runSignal: run.abortController.signal,
+      onRunPhase: run.setPhase,
       preparePlayback: () => {
-        controller.playbackAbortController = new AbortController();
+        controller.playbackAbortController = run.abortController;
         return controller.playbackAbortController.signal;
       },
       finishPlayback: () => {
@@ -586,6 +679,7 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
         controller.triggerActive = false;
         controller.playbackAbortController = null;
         controller.statusMessage = null;
+        run.finish();
       });
   };
 
@@ -766,6 +860,7 @@ export async function handleLeave(interaction: ChatInputCommandInteraction) {
   }
 
   const session = getVoiceSession(interaction.guild.id);
+  stopActiveVoiceRun(interaction.guild.id);
   disposeAutoListen(interaction.guild.id);
   connection.destroy();
 

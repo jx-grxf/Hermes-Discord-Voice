@@ -31,6 +31,8 @@ export type ListenExecutionContext = {
   requestUserId: string;
   connection: VoiceConnection;
   session: VoiceSessionState;
+  runSignal?: AbortSignal;
+  onRunPhase?: (phase: 'thinking' | 'synthesizing' | 'playing') => void;
   playbackSignal?: AbortSignal;
   preparePlayback?: () => AbortSignal | undefined;
   finishPlayback?: () => void;
@@ -433,12 +435,14 @@ export async function runListenTurn(context: ListenExecutionContext) {
         });
 
         const hermesStartedAt = Date.now();
+        context.onRunPhase?.('thinking');
         const hermesResult = await runHermesTurnWithOptionalVerbose({
           guildId,
           guild,
           session,
           transcript,
           logPrefix,
+          signal: context.runSignal,
         });
         log('Hermes turn finished', {
           sessionKeyPreview: redactSessionKey(hermesResult.sessionKey),
@@ -456,11 +460,13 @@ export async function runListenTurn(context: ListenExecutionContext) {
         });
 
         const ttsStartedAt = Date.now();
-        await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider);
+        context.onRunPhase?.('synthesizing');
+        await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider, { signal: context.runSignal });
         log('TTS synthesis finished', { ttsPath, durationMs: Date.now() - ttsStartedAt, provider: session.ttsProvider });
         setVoiceSessionBotSpeaking(guildId, true);
         const playbackStartedAt = Date.now();
-        const playbackSignal = context.preparePlayback?.() ?? context.playbackSignal;
+        context.onRunPhase?.('playing');
+        const playbackSignal = context.preparePlayback?.() ?? context.playbackSignal ?? context.runSignal;
         await safeProgressReply({
           embed: buildListenStatusEmbed({
             stage: 'playing',

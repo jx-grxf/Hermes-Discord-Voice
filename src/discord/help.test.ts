@@ -8,6 +8,7 @@ test('help commands embed lists voice verbose and debug text commands', () => {
   const names = embed.fields?.map((field) => field.name) ?? [];
 
   assert(names.includes('/interrupt'));
+  assert(names.includes('/stop-voice'));
   assert(names.includes('/voice-verbose'));
   assert(names.includes('/debugtext'));
 });
