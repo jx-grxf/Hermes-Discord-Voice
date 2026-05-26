@@ -11,7 +11,7 @@ import {
   VOICE_MODE_AUTO,
   VOICE_MODE_SLASH,
   VOICE_TTS_ELEVENLABS,
-  VOICE_TTS_OPENCLAW,
+  VOICE_TTS_HERMES,
   VOICE_TTS_PIPER,
   VOICE_TTS_SAY,
   VOICE_VERBOSE_DISABLE,
@@ -33,7 +33,7 @@ test('buildVoiceVerboseButtons exposes yes/no actions', () => {
 
 test('buildVoiceTtsButtons exposes all provider switches', () => {
   const row = buildVoiceTtsButtons('piper')[0].toJSON();
-  assert.deepEqual(getCustomIds(row), [VOICE_TTS_SAY, VOICE_TTS_PIPER, VOICE_TTS_ELEVENLABS, VOICE_TTS_OPENCLAW]);
+  assert.deepEqual(getCustomIds(row), [VOICE_TTS_SAY, VOICE_TTS_PIPER, VOICE_TTS_ELEVENLABS, VOICE_TTS_HERMES]);
 });
 
 test('buildJoinControls combines talk-mode and tts controls', () => {
@@ -41,13 +41,13 @@ test('buildJoinControls combines talk-mode and tts controls', () => {
   const rows = buildJoinControls(session).map((row) => row.toJSON());
 
   assert.deepEqual(getCustomIds(rows[0]), [VOICE_MODE_SLASH, VOICE_MODE_AUTO]);
-  assert.deepEqual(getCustomIds(rows[1]), [VOICE_TTS_SAY, VOICE_TTS_PIPER, VOICE_TTS_ELEVENLABS, VOICE_TTS_OPENCLAW]);
+  assert.deepEqual(getCustomIds(rows[1]), [VOICE_TTS_SAY, VOICE_TTS_PIPER, VOICE_TTS_ELEVENLABS, VOICE_TTS_HERMES]);
 });
 
 test('buildJoinEmbed includes mode, tts, and warning fields', () => {
   const session = createVoiceSession('guild-1', 'channel-1', 'user-1', {
-    sessionKey: 'agent:discord-voice:discord:voice:guild:1:channel:1:join:abc',
-    openClawSessionId: 'session-1',
+    sessionKey: 'hermes-discord-voice:guild:1:channel:1:join:abc',
+    hermesResponseId: 'session-1',
   });
   const embed = buildJoinEmbed(session, {
     channelId: 'channel-1',
@@ -59,11 +59,11 @@ test('buildJoinEmbed includes mode, tts, and warning fields', () => {
   const names = embed.fields?.map((field) => field.name) ?? [];
   assert.deepEqual(names, ['Voice', 'Mode', 'Verbose', 'TTS', 'Session key', 'Session id', 'Next', 'Warnings']);
   assert.match(embed.fields?.find((field) => field.name === 'Mode')?.value ?? '', /Slash-to-talk/);
-  assert.match(embed.fields?.find((field) => field.name === 'TTS')?.value ?? '', /Say|Piper|ElevenLabs|OpenClaw/);
+  assert.match(embed.fields?.find((field) => field.name === 'TTS')?.value ?? '', /Say|Piper|ElevenLabs|Hermes/);
 });
 
-test('formatTtsProvider labels OpenClaw provider', () => {
-  assert.equal(formatTtsProvider('openclaw'), 'OpenClaw');
+test('formatTtsProvider labels Hermes provider', () => {
+  assert.equal(formatTtsProvider('hermes'), 'Hermes');
 });
 
 test('buildVoiceVerbosePromptEmbed reflects active thread state', () => {

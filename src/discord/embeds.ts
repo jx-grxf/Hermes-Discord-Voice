@@ -18,10 +18,10 @@ export const VOICE_VERBOSE_DISABLE = 'voice-verbose:disable';
 export const VOICE_TTS_SAY = 'voice-tts:say';
 export const VOICE_TTS_PIPER = 'voice-tts:piper';
 export const VOICE_TTS_ELEVENLABS = 'voice-tts:elevenlabs';
-export const VOICE_TTS_OPENCLAW = 'voice-tts:openclaw';
+export const VOICE_TTS_HERMES = 'voice-tts:hermes';
 
 export function formatTtsProvider(provider: TtsProvider): string {
-  if (provider === 'openclaw') return 'OpenClaw';
+  if (provider === 'hermes') return 'Hermes';
   if (provider === 'elevenlabs') return 'ElevenLabs';
   if (provider === 'piper') return 'Piper';
   return 'Say';
@@ -58,9 +58,9 @@ export function buildVoiceTtsButtons(activeProvider: TtsProvider) {
         .setLabel('ElevenLabs')
         .setStyle(activeProvider === 'elevenlabs' ? ButtonStyle.Primary : ButtonStyle.Secondary),
       new ButtonBuilder()
-        .setCustomId(VOICE_TTS_OPENCLAW)
-        .setLabel('OpenClaw')
-        .setStyle(activeProvider === 'openclaw' ? ButtonStyle.Primary : ButtonStyle.Secondary),
+        .setCustomId(VOICE_TTS_HERMES)
+        .setLabel('Hermes')
+        .setStyle(activeProvider === 'hermes' ? ButtonStyle.Primary : ButtonStyle.Secondary),
     ),
   ];
 }
@@ -125,7 +125,7 @@ export function buildJoinEmbed(session: VoiceSessionState, options: {
   const embed = new EmbedBuilder()
     .setTitle('Voice bridge ready')
     .setColor(options.issues.length ? 0xfee75c : 0x57f287)
-    .setDescription(`Connected to your voice channel. ${options.created ? 'Created' : 'Reusing'} the active OpenClaw voice session.`)
+    .setDescription(`Connected to your voice channel. ${options.created ? 'Created' : 'Reusing'} the active Hermes voice session.`)
     .addFields(
       {
         name: 'Voice',
@@ -156,7 +156,7 @@ export function buildJoinEmbed(session: VoiceSessionState, options: {
       },
       {
         name: 'Session id',
-        value: summarizeSessionId(session.openClawSessionId),
+        value: summarizeSessionId(session.hermesResponseId),
         inline: false,
       },
       {
@@ -165,7 +165,7 @@ export function buildJoinEmbed(session: VoiceSessionState, options: {
         inline: false,
       },
     )
-    .setFooter({ text: options.created ? 'Fresh OpenClaw session prepared' : 'Existing OpenClaw session reused' });
+    .setFooter({ text: options.created ? 'Fresh Hermes session prepared' : 'Existing Hermes session reused' });
 
   if (options.issues.length) {
     embed.addFields({
@@ -187,7 +187,7 @@ export function buildInfoEmbed(guildId: string | null, userId: string): EmbedBui
   const sessionLines = session
     ? [
         `Key: ${summarizeSessionKey(session.sessionKey)}`,
-        `Id: ${summarizeSessionId(session.openClawSessionId)}`,
+        `Id: ${summarizeSessionId(session.hermesResponseId)}`,
         `Created by: \`${session.createdByUserId}\``,
         `Age: ${formatAge(Date.now() - session.createdAt)}`,
         session.lastUsedAt ? `Last used: ${formatAge(Date.now() - session.lastUsedAt)}` : 'Last used: not yet',

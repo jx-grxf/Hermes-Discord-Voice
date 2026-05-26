@@ -51,7 +51,7 @@ async function main() {
     },
   ];
 
-  console.log('OpenClaw-Discord-Voice Doctor');
+  console.log('Hermes-Discord-Voice Doctor');
   console.log('==============================');
   printSection('Environment', envRows);
   printSection('Binaries', binaryRows);

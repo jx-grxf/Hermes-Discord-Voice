@@ -21,26 +21,26 @@ import {
 test('buildVoiceSessionKey creates a guild-channel scoped ephemeral key', () => {
   const key = buildVoiceSessionKey('guild-1', 'channel-1');
 
-  assert.match(key, /^agent:discord-voice:discord:voice:guild:guild-1:channel:channel-1:join:/);
+  assert.match(key, /^hermes-discord-voice:guild:guild-1:channel:channel-1:join:/);
 });
 
 test('buildVoiceSessionKey can target a custom voice agent namespace', () => {
-  process.env.OPENCLAW_VOICE_AGENT_ID = 'custom-voice';
+  process.env.HERMES_VOICE_SESSION_PREFIX = 'custom-voice';
   const key = buildVoiceSessionKey('guild-1', 'channel-1');
-  delete process.env.OPENCLAW_VOICE_AGENT_ID;
+  delete process.env.HERMES_VOICE_SESSION_PREFIX;
 
-  assert.match(key, /^agent:custom-voice:discord:voice:guild:guild-1:channel:channel-1:join:/);
+  assert.match(key, /^custom-voice:guild:guild-1:channel:channel-1:join:/);
 });
 
 test('createVoiceSession stores one active session per guild', () => {
   const created = createVoiceSession('guild-1', 'channel-1', 'user-1', {
-    sessionKey: 'agent:discord-voice:discord:voice:guild:guild-1:channel:channel-1:join:test',
-    openClawSessionId: 'oc-session-1',
+    sessionKey: 'hermes-discord-voice:guild:guild-1:channel:channel-1:join:test',
+    hermesResponseId: 'resp_1',
   });
 
   assert.equal(created.channelId, 'channel-1');
   assert.equal(created.createdByUserId, 'user-1');
-  assert.equal(getVoiceSession('guild-1')?.openClawSessionId, 'oc-session-1');
+  assert.equal(getVoiceSession('guild-1')?.hermesResponseId, 'resp_1');
   assert.equal(getVoiceSession('guild-1')?.listenMode, 'slash');
 
   clearVoiceSession('guild-1');
@@ -88,7 +88,7 @@ test('voice session verbose mode can bind a verbose thread', () => {
   clearVoiceSession('guild-verbose');
 });
 
-test('voice session tts provider can switch between say, elevenlabs, piper, and openclaw', () => {
+test('voice session tts provider can switch between say, elevenlabs, piper, and hermes', () => {
   createVoiceSession('guild-tts', 'channel-1', 'user-1');
 
   const updated = setVoiceSessionTtsProvider('guild-tts', 'elevenlabs');
@@ -102,23 +102,23 @@ test('voice session tts provider can switch between say, elevenlabs, piper, and 
   setVoiceSessionTtsProvider('guild-tts', 'piper');
   assert.equal(getVoiceSession('guild-tts')?.ttsProvider, 'piper');
 
-  setVoiceSessionTtsProvider('guild-tts', 'openclaw');
-  assert.equal(getVoiceSession('guild-tts')?.ttsProvider, 'openclaw');
+  setVoiceSessionTtsProvider('guild-tts', 'hermes');
+  assert.equal(getVoiceSession('guild-tts')?.ttsProvider, 'hermes');
 
   clearVoiceSession('guild-tts');
 });
 
-test('markVoiceSessionUsed stores OpenClaw session details after a real turn', () => {
+test('markVoiceSessionUsed stores Hermes session details after a real turn', () => {
   createVoiceSession('guild-2', 'channel-2', 'user-2');
   const updated = markVoiceSessionUsed('guild-2', {
     initialized: true,
-    sessionKey: 'agent:discord-voice:discord:voice:guild:guild-2:channel:channel-2:join:canonical',
-    openClawSessionId: 'oc-session-456',
+    sessionKey: 'hermes-discord-voice:guild:guild-2:channel:channel-2:join:canonical',
+    hermesResponseId: 'resp_456',
   });
 
   assert(updated);
-  assert.equal(updated?.sessionKey, 'agent:discord-voice:discord:voice:guild:guild-2:channel:channel-2:join:canonical');
-  assert.equal(updated?.openClawSessionId, 'oc-session-456');
+  assert.equal(updated?.sessionKey, 'hermes-discord-voice:guild:guild-2:channel:channel-2:join:canonical');
+  assert.equal(updated?.hermesResponseId, 'resp_456');
   assert.equal(Boolean(updated?.initializedAt), true);
   assert.equal(Boolean(updated?.lastUsedAt), true);
 

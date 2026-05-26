@@ -11,25 +11,25 @@ Check them:
 ```bash
 which ffmpeg
 which whisper-cli
-which openclaw
+which hermes
 which say
 python3 --version
 ```
 
-`openclaw` must already be installed and working locally.
+`hermes` must already be installed and working locally.
 
 Recommended:
 
-- install OpenClaw first from the official repo: [openclaw/openclaw](https://github.com/openclaw/openclaw)
-- confirm `openclaw gateway call agent --help` or at least `openclaw --help` works before starting this bot
+- install Hermes first from the official repo: [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent)
+- confirm `hermes --help` and `hermes chat -q "hello" -Q` work before starting this bot
 
-This project currently assumes macOS for the easiest Discord voice setup. TTS can run through OpenClaw gateway TTS, local Piper, macOS `say`, or ElevenLabs.
+This project currently assumes macOS for the easiest Discord voice setup. TTS can run through local Piper, macOS `say`, ElevenLabs, or a custom Hermes TTS command.
 
 ## 2) Clone the repo and install Node dependencies
 
 ```bash
-git clone https://github.com/jx-grxf/OpenClaw-Discord-Voice.git
-cd OpenClaw-Discord-Voice
+git clone https://github.com/jx-grxf/Hermes-Discord-Voice.git
+cd Hermes-Discord-Voice
 brew install node
 npm install
 ```
@@ -66,8 +66,12 @@ Recommended Discord permissions:
 
 Optional:
 
-- `TTS_PROVIDER` to choose `openclaw`, `piper`, `say`, or `elevenlabs`. `.env.example` starts with `piper`; runtime fallback is `say` if unset.
-- `OPENCLAW_VOICE_AGENT_ID` optional, default `discord-voice`. Do not set this to `main`; voice needs a separate OpenClaw namespace from heartbeats.
+- `TTS_PROVIDER` to choose `hermes`, `piper`, `say`, or `elevenlabs`. `.env.example` starts with `piper`; runtime fallback is `say` if unset.
+- `HERMES_TRANSPORT` optional, default `cli`; set `api` to use the local Hermes API server.
+- `HERMES_PROVIDER`, `HERMES_MODEL`, `HERMES_TOOLSETS`, and `HERMES_SKILLS` to override Hermes routing per bridge call.
+- `HERMES_VOICE_SESSION_PREFIX` optional, default `hermes-discord-voice`; each `/join` still creates a fresh conversation key.
+- `HERMES_API_BASE_URL` and `HERMES_API_KEY` if you use `HERMES_TRANSPORT=api`.
+- `HERMES_TTS_COMMAND` if you use `TTS_PROVIDER=hermes`; the command receives output path and text as arguments.
 - `TTS_VOICE` to choose the macOS `say` voice. Default: `Flo`
 - `TTS_RATE` to set the macOS `say` speaking rate. Default: `220`
 - `PIPER_BINARY_PATH` optional, default `tools/piper-venv/bin/python`
@@ -132,19 +136,19 @@ The bot registers guild slash commands automatically on startup.
 
 If startup fails, do not jump straight into Discord debugging yet. First confirm:
 
-- `openclaw --help` works
-- `openclaw gateway call agent --help` works
+- `hermes --help` works
+- `hermes chat -q "hello" -Q` works
 - `which ffmpeg`
 - `which whisper-cli`
 - your configured TTS provider is actually available
 
 ## TTS providers
 
-Gateway-backed:
+Custom Hermes-backed:
 
-- `TTS_PROVIDER=openclaw`
-- uses OpenClaw `tts.convert`
-- requires a running, healthy OpenClaw gateway with TTS configured
+- `TTS_PROVIDER=hermes`
+- runs `HERMES_TTS_COMMAND <output-path> <text>`
+- useful when your Hermes setup exposes a local TTS wrapper script
 
 Recommended local default:
 
@@ -187,6 +191,6 @@ Recommended for better accuracy:
 
 - Successful startup only confirms the expected env vars, binaries, and Whisper model are present.
 - It does not prove Discord voice receive will work in your runtime environment.
-- It also does not prove your local OpenClaw gateway token has every scope needed for optional features like verbose/cleanup edge cases.
+- It also does not prove every Hermes provider/model/toolset combination will succeed for a real prompt.
 - Real verification still requires a manual smoke test in a Discord voice channel; see `docs/USAGE.md`.
 - `/help` in Discord is the easiest way to discover commands, info, and doctor output after startup.

@@ -7,35 +7,12 @@ export function formatPipelineError(error: unknown): string {
     const firstLine = message.split('\n').find((line) => line.trim())?.trim() ?? message;
 
     if (message.includes('missing scope: operator.write')) {
-      return 'OpenClaw denied live verbose streaming for this session because the local gateway token does not have write scope.';
+      return 'Hermes denied live verbose streaming for this session because the local API token does not have write scope.';
     }
 
     return firstLine;
   }
   return 'Unknown voice bridge error.';
-}
-
-export function formatCleanupError(error: unknown): string {
-  if (error instanceof Error && error.message.trim()) {
-    const message = error.message.trim();
-
-    if (message.includes('ETIMEDOUT') || message.includes('timed out')) {
-      return 'OpenClaw cleanup timed out before it could confirm the session deletion.';
-    }
-
-    if (message.includes('gateway closed') || message.includes('gateway connect failed')) {
-      return 'OpenClaw closed the cleanup connection before it could confirm the session deletion.';
-    }
-
-    if (message.includes('missing scope: operator.admin')) {
-      return 'OpenClaw denied the cleanup request because this local gateway token does not have the needed admin scope.';
-    }
-
-    const firstLine = message.split('\n').find((line) => line.trim())?.trim();
-    if (firstLine) return firstLine;
-  }
-
-  return 'OpenClaw cleanup failed for an unknown reason.';
 }
 
 export function fitEmbedFieldValue(value: string, maxLength = 1024): string {
@@ -101,7 +78,7 @@ export function buildListenLogDetails(details: {
   opusBytes?: number;
   pcmBytes?: number;
   transcriptLength?: number;
-  hasOpenClawSessionId?: boolean;
+  hasHermesResponseId?: boolean;
   sessionKey: string;
 }) {
   return {
@@ -113,7 +90,7 @@ export function buildListenLogDetails(details: {
     opusBytes: details.opusBytes,
     pcmBytes: details.pcmBytes,
     transcriptLength: details.transcriptLength,
-    hasOpenClawSessionId: details.hasOpenClawSessionId ?? false,
+    hasHermesResponseId: details.hasHermesResponseId ?? false,
     sessionKeyPreview: redactSessionKey(details.sessionKey),
   };
 }
@@ -127,9 +104,9 @@ export function formatSessionStatus(guildId: string | null, userId: string): str
   const session = getVoiceSession(guildId);
   if (!session) return `No voice session has been prepared for you (<@${userId}>) yet.`;
 
-  const details = [`OpenClaw key: \`${redactSessionKey(session.sessionKey)}\``];
-  if (session.openClawSessionId) {
-    details.push(`OpenClaw session id: \`${truncate(session.openClawSessionId, 24)}\``);
+  const details = [`Hermes conversation: \`${redactSessionKey(session.sessionKey)}\``];
+  if (session.hermesResponseId) {
+    details.push(`Hermes response id: \`${truncate(session.hermesResponseId, 24)}\``);
   }
   details.push(`Created by Discord user: \`${session.createdByUserId}\``);
   details.push(`Created: ${formatAge(Date.now() - session.createdAt)}`);

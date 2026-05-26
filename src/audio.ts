@@ -13,10 +13,9 @@ import {
   entersState,
 } from '@discordjs/voice';
 import { getWhisperModelPath } from './diagnostics.js';
-import { synthesizeOpenClawSpeech } from './openclaw.js';
 import { getConfiguredTtsProvider, getPiperBinaryPath, getPiperModelPath } from './tts-config.js';
 
-export type TtsProvider = 'say' | 'elevenlabs' | 'piper' | 'openclaw';
+export type TtsProvider = 'say' | 'elevenlabs' | 'piper' | 'hermes';
 
 export async function convertPcmToWav(pcmPath: string, wavPath: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
@@ -170,7 +169,7 @@ export function getTtsOutputExtension(): string {
 export function getTtsOutputExtensionForProvider(provider: TtsProvider): string {
   if (provider === 'elevenlabs') return 'mp3';
   if (provider === 'piper') return 'wav';
-  if (provider === 'openclaw') return 'audio';
+  if (provider === 'hermes') return 'audio';
   return 'aiff';
 }
 
@@ -232,9 +231,33 @@ export async function synthesizeWithElevenLabs(text: string, outPath: string): P
   await fs.promises.writeFile(outPath, audioBuffer);
 }
 
-export async function synthesizeWithOpenClaw(text: string, outPath: string): Promise<void> {
-  const result = await synthesizeOpenClawSpeech(text);
-  await fs.promises.copyFile(result.audioPath, outPath);
+function getHermesTtsCommand(): string {
+  const command = process.env.HERMES_TTS_COMMAND?.trim();
+  if (!command) {
+    throw new Error('HERMES_TTS_COMMAND is required when TTS_PROVIDER=hermes. The command receives output path and text as arguments.');
+  }
+  return command;
+}
+
+export async function synthesizeWithHermes(text: string, outPath: string): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn(getHermesTtsCommand(), [outPath, text], {
+      cwd: process.cwd(),
+      env: process.env,
+    });
+    let stderr = '';
+    proc.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+    proc.on('error', reject);
+    proc.on('close', (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+      reject(new Error(`Hermes TTS command exited with code ${code}: ${stderr || 'no additional details'}`));
+    });
+  });
 }
 
 export async function synthesizeWithPiper(text: string, outPath: string): Promise<void> {
@@ -285,8 +308,8 @@ export async function synthesizeWithPiper(text: string, outPath: string): Promis
 }
 
 export async function synthesizeSpeech(text: string, outPath: string, provider: TtsProvider = getTtsProvider()): Promise<void> {
-  if (provider === 'openclaw') {
-    await synthesizeWithOpenClaw(text, outPath);
+  if (provider === 'hermes') {
+    await synthesizeWithHermes(text, outPath);
     return;
   }
 

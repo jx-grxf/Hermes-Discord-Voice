@@ -16,11 +16,7 @@ import {
   type TtsProvider,
 } from '../audio.js';
 import { summarizeHealthIssues, collectBridgeHealth } from '../diagnostics.js';
-import {
-  createOpenClawSession,
-  deleteOpenClawSession,
-  deleteOpenClawSessionWithRetry,
-} from '../openclaw.js';
+import { createHermesSession } from '../hermes.js';
 import {
   beginGuildJoin,
   buildVoiceSessionKey,
@@ -40,7 +36,7 @@ import { getOrCreateConnectionFromMember } from '../voice.js';
 import {
   VOICE_MODE_AUTO,
   VOICE_TTS_ELEVENLABS,
-  VOICE_TTS_OPENCLAW,
+  VOICE_TTS_HERMES,
   VOICE_TTS_PIPER,
   VOICE_TTS_SAY,
   VOICE_VERBOSE_DISABLE,
@@ -54,7 +50,6 @@ import {
 } from './embeds.js';
 import {
   fitEmbedFieldValue,
-  formatCleanupError,
   formatLatency,
   formatPipelineError,
   sleep,
@@ -62,7 +57,7 @@ import {
   summarizeSessionKey,
 } from './helpers.js';
 import { runListenTurn, type ListenExecutionContext } from './listen-turn.js';
-import { ensureVerboseThread, runOpenClawTurnWithOptionalVerbose } from './verbose.js';
+import { ensureVerboseThread, runHermesTurnWithOptionalVerbose } from './verbose.js';
 
 export { buildListenLogDetails, getListenTimingConfig, redactSessionKey } from './helpers.js';
 
@@ -93,7 +88,7 @@ export async function handleJoin(interaction: ChatInputCommandInteraction) {
   const connection = await getOrCreateConnectionFromMember(interaction);
   if (!connection) return;
 
-  await interaction.editReply({ content: 'Voice connected. Preparing the OpenClaw voice session...' });
+  await interaction.editReply({ content: 'Voice connected. Preparing the Hermes voice session...' });
 
   const health = collectBridgeHealth();
   const issues = summarizeHealthIssues(health);
@@ -109,19 +104,6 @@ export async function handleJoin(interaction: ChatInputCommandInteraction) {
     });
     disposeAutoListen(guildId);
     clearVoiceSession(guildId);
-    try {
-      await deleteOpenClawSessionWithRetry(session.sessionKey, {
-        attempts: 2,
-        timeoutMs: 10_000,
-        backoffMs: 500,
-      });
-    } catch (error) {
-      console.warn('Failed to clean up stale OpenClaw session after reconnect', {
-        guildId,
-        previousChannelId: session.channelId,
-        error: formatPipelineError(error),
-      });
-    }
     session = null;
   }
 
@@ -133,15 +115,6 @@ export async function handleJoin(interaction: ChatInputCommandInteraction) {
     });
     disposeAutoListen(guildId);
     clearVoiceSession(guildId);
-    try {
-      await deleteOpenClawSession(session.sessionKey);
-    } catch (error) {
-      console.warn('Failed to clean up stale OpenClaw session before recreating', {
-        guildId,
-        previousChannelId: session.channelId,
-        error: formatPipelineError(error),
-      });
-    }
     session = null;
   }
 
@@ -162,19 +135,16 @@ export async function handleJoin(interaction: ChatInputCommandInteraction) {
         return;
       }
       const requestedKey = buildVoiceSessionKey(guildId, channelId);
-      const openClawSession = await createOpenClawSession(requestedKey, {
-        timeoutMs: 12_000,
-        attempts: 2,
-      });
+      const hermesSession = createHermesSession(requestedKey);
       session = createVoiceSession(guildId, channelId, interaction.user.id, {
-        sessionKey: openClawSession.sessionKey,
-        openClawSessionId: openClawSession.sessionId,
+        sessionKey: hermesSession.sessionKey,
+        hermesResponseId: hermesSession.responseId,
       });
       created = true;
     } catch (error) {
       connection.destroy();
       await interaction.editReply({
-        content: `Joining voice worked, but creating the OpenClaw session failed: ${formatPipelineError(error)}`,
+        content: `Joining voice worked, but creating the Hermes session failed: ${formatPipelineError(error)}`,
       });
       return;
     } finally {
@@ -210,10 +180,10 @@ export async function handleListen(interaction: ChatInputCommandInteraction) {
   const session = getVoiceSession(guildId);
   if (!session) {
     if (getActiveGuildJoinUser(guildId)) {
-      await interaction.editReply('The OpenClaw voice session is still being prepared. Wait a moment, then run `/listen` again.');
+      await interaction.editReply('The Hermes voice session is still being prepared. Wait a moment, then run `/listen` again.');
       return;
     }
-    await interaction.editReply('No OpenClaw voice session is active yet. Run `/join` first.');
+    await interaction.editReply('No Hermes voice session is active yet. Run `/join` first.');
     return;
   }
 
@@ -272,10 +242,10 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
   const session = getVoiceSession(guildId);
   if (!session) {
     if (getActiveGuildJoinUser(guildId)) {
-      await interaction.editReply('The OpenClaw voice session is still being prepared. Wait a moment, then run `/debugtext` again.');
+      await interaction.editReply('The Hermes voice session is still being prepared. Wait a moment, then run `/debugtext` again.');
       return;
     }
-    await interaction.editReply('No OpenClaw voice session is active yet. Run `/join` first.');
+    await interaction.editReply('No Hermes voice session is active yet. Run `/join` first.');
     return;
   }
 
@@ -289,7 +259,7 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
   }
 
   try {
-    const openClawResult = await runOpenClawTurnWithOptionalVerbose({
+    const hermesResult = await runHermesTurnWithOptionalVerbose({
       guildId,
       guild: interaction.guild,
       session,
@@ -307,7 +277,7 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
       const tmpDir = createRequestTempDir();
       try {
         const ttsPath = path.join(tmpDir, `reply.${getTtsOutputExtensionForProvider(session.ttsProvider)}`);
-        await synthesizeSpeech(openClawResult.reply, ttsPath, session.ttsProvider);
+        await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider);
         setVoiceSessionBotSpeaking(guildId, true);
         await playAudioFile(connection, ttsPath);
       } finally {
@@ -318,8 +288,8 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
 
     markVoiceSessionUsed(guildId, {
       initialized: true,
-      sessionKey: openClawResult.sessionKey,
-      openClawSessionId: openClawResult.sessionId,
+      sessionKey: hermesResult.sessionKey,
+      hermesResponseId: hermesResult.responseId,
     });
 
     const replyEmbed = new EmbedBuilder()
@@ -332,8 +302,8 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
           inline: false,
         },
         {
-          name: 'OpenClaw replied',
-          value: fitEmbedFieldValue(openClawResult.reply),
+          name: 'Hermes replied',
+          value: fitEmbedFieldValue(hermesResult.reply),
           inline: false,
         },
         {
@@ -345,12 +315,12 @@ export async function handleDebugText(interaction: ChatInputCommandInteraction) 
         },
         {
           name: 'Session key',
-          value: summarizeSessionKey(openClawResult.sessionKey),
+          value: summarizeSessionKey(hermesResult.sessionKey),
           inline: false,
         },
         {
           name: 'Session id',
-          value: summarizeSessionId(openClawResult.sessionId),
+          value: summarizeSessionId(hermesResult.responseId),
           inline: false,
         },
         {
@@ -380,7 +350,7 @@ export async function handleVoiceVerbose(interaction: ChatInputCommandInteractio
 
   const session = getVoiceSession(guildId);
   if (!session) {
-    await interaction.editReply({ content: 'No OpenClaw voice session is active yet. Run `/join` first.' });
+    await interaction.editReply({ content: 'No Hermes voice session is active yet. Run `/join` first.' });
     return;
   }
 
@@ -564,8 +534,8 @@ export async function handleVoiceTtsButton(interaction: ButtonInteraction) {
   let nextProvider: TtsProvider;
   if (interaction.customId === VOICE_TTS_ELEVENLABS) {
     nextProvider = 'elevenlabs';
-  } else if (interaction.customId === VOICE_TTS_OPENCLAW) {
-    nextProvider = 'openclaw';
+  } else if (interaction.customId === VOICE_TTS_HERMES) {
+    nextProvider = 'hermes';
   } else if (interaction.customId === VOICE_TTS_PIPER) {
     nextProvider = 'piper';
   } else if (interaction.customId === VOICE_TTS_SAY) {
@@ -630,46 +600,17 @@ export async function handleLeave(interaction: ChatInputCommandInteraction) {
     return;
   }
 
-  try {
-    const deleted = await deleteOpenClawSessionWithRetry(session.sessionKey, {
-      attempts: 3,
-      timeoutMs: 15_000,
-      backoffMs: 1_000,
+  clearVoiceSession(interaction.guild.id);
+  const embed = new EmbedBuilder()
+    .setTitle('Disconnected')
+    .setColor(0x5865f2)
+    .setDescription('Left the voice channel and cleared the local Hermes voice session reference.')
+    .addFields({
+      name: 'Hermes conversation',
+      value: summarizeSessionKey(session.sessionKey),
+      inline: false,
     });
-    clearVoiceSession(interaction.guild.id);
-    const embed = new EmbedBuilder()
-      .setTitle('Disconnected')
-      .setColor(deleted.deleted ? 0x5865f2 : 0xfee75c)
-      .setDescription(
-        deleted.deleted
-          ? 'Left the voice channel and removed the OpenClaw voice session.'
-          : 'Left the voice channel. OpenClaw reported no stored session to delete.',
-      )
-      .addFields({
-        name: 'Session key',
-        value: summarizeSessionKey(session.sessionKey),
-        inline: false,
-      });
-    await interaction.editReply({ embeds: [embed] });
-  } catch (error) {
-    const embed = new EmbedBuilder()
-      .setTitle('Disconnected with cleanup warning')
-      .setColor(0xed4245)
-      .setDescription(`Left the voice channel, but OpenClaw session cleanup failed: ${formatCleanupError(error)}`)
-      .addFields(
-        {
-          name: 'Session key',
-          value: summarizeSessionKey(session.sessionKey),
-          inline: false,
-        },
-        {
-          name: 'Retry path',
-          value: 'The local session reference was kept. Re-run `/leave` or `/join` to retry cleanup safely.',
-          inline: false,
-        },
-      );
-    await interaction.editReply({ embeds: [embed] });
-  }
+  await interaction.editReply({ embeds: [embed] });
 }
 
 export async function handleInfo(interaction: ChatInputCommandInteraction) {

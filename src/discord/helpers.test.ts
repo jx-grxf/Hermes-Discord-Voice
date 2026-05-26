@@ -4,7 +4,6 @@ import { clearAllVoiceState, createVoiceSession } from '../state.js';
 import {
   buildListenLogDetails,
   fitEmbedFieldValue,
-  formatCleanupError,
   formatLatency,
   formatPipelineError,
   formatSessionStatus,
@@ -21,8 +20,8 @@ test.afterEach(() => {
 
 test('redactSessionKey keeps only a short preview for logs', () => {
   assert.equal(
-    redactSessionKey('agent:discord-voice:discord:voice:guild:123:channel:456:join:abcdef'),
-    'agent:discord-voice:dis…',
+    redactSessionKey('hermes-discord-voice:guild:123:channel:456:join:abcdef'),
+    'hermes-discord-voice:gu…',
   );
 });
 
@@ -34,8 +33,8 @@ test('buildListenLogDetails redacts identifiers and keeps only coarse runtime st
     ssrcMapped: false,
     opusPackets: 12,
     transcriptLength: 34,
-    hasOpenClawSessionId: true,
-    sessionKey: 'agent:discord-voice:discord:voice:guild:123:channel:456:join:abcdef',
+    hasHermesResponseId: true,
+    sessionKey: 'hermes-discord-voice:guild:123:channel:456:join:abcdef',
   });
 
   assert.deepEqual(details, {
@@ -47,8 +46,8 @@ test('buildListenLogDetails redacts identifiers and keeps only coarse runtime st
     opusBytes: undefined,
     pcmBytes: undefined,
     transcriptLength: 34,
-    hasOpenClawSessionId: true,
-    sessionKeyPreview: 'agent:discord-voice:dis…',
+    hasHermesResponseId: true,
+    sessionKeyPreview: 'hermes-discord-voice:gu…',
   });
 });
 
@@ -70,11 +69,6 @@ test('formatPipelineError maps verbose scope failures to a human-readable messag
   assert.match(message, /does not have write scope/i);
 });
 
-test('formatCleanupError condenses gateway failures', () => {
-  const message = formatCleanupError(new Error('gateway connect failed: Error: gateway closed (1000)'));
-  assert.match(message, /closed the cleanup connection/i);
-});
-
 test('formatLatency switches from milliseconds to seconds', () => {
   assert.equal(formatLatency(842), '842 ms');
   assert.equal(formatLatency(3_240), '3.2 s');
@@ -82,15 +76,15 @@ test('formatLatency switches from milliseconds to seconds', () => {
 
 test('formatSessionStatus reports active session details', () => {
   const session = createVoiceSession('guild-1', 'channel-1', 'user-1', {
-    sessionKey: 'agent:discord-voice:discord:voice:guild:1:channel:1:join:abc',
-    openClawSessionId: 'session-1',
+    sessionKey: 'hermes-discord-voice:guild:1:channel:1:join:abc',
+    hermesResponseId: 'session-1',
   });
   session.lastUsedAt = Date.now() - 5_000;
 
   const status = formatSessionStatus('guild-1', 'user-1');
-  assert.match(status, /OpenClaw key:/);
-  assert.match(status, /OpenClaw session id:/);
+  assert.match(status, /Hermes conversation:/);
+  assert.match(status, /Hermes response id:/);
   assert.match(status, /Created by Discord user/);
   assert.match(status, /Last used:/);
-  assert.doesNotMatch(status, /agent:discord-voice:discord:voice:guild:1:channel:1:join:abc/);
+  assert.doesNotMatch(status, /hermes-discord-voice:guild:1:channel:1:join:abc/);
 });

@@ -6,7 +6,7 @@ export type VoiceSessionState = {
   createdAt: number;
   createdByUserId: string;
   sessionKey: string;
-  openClawSessionId: string | null;
+  hermesResponseId: string | null;
   initializedAt: number | null;
   lastUsedAt: number | null;
   listenMode: 'slash' | 'auto';
@@ -22,34 +22,34 @@ const activeSessionByGuild = new Map<string, VoiceSessionState>();
 const activeListenByGuild = new Map<string, string>();
 const activeJoinByGuild = new Map<string, string>();
 
-function resolveOpenClawAgentId(): string {
-  return process.env.OPENCLAW_VOICE_AGENT_ID?.trim() || 'discord-voice';
+function resolveHermesSessionPrefix(): string {
+  return process.env.HERMES_VOICE_SESSION_PREFIX?.trim() || 'hermes-discord-voice';
 }
 
 function resolveDefaultTtsProvider(): TtsProvider {
   const provider = process.env.TTS_PROVIDER?.trim().toLowerCase();
-  if (provider === 'openclaw') return 'openclaw';
+  if (provider === 'hermes') return 'hermes';
   if (provider === 'elevenlabs') return 'elevenlabs';
   if (provider === 'piper') return 'piper';
   return 'say';
 }
 
 export function buildVoiceSessionKey(guildId: string, channelId: string): string {
-  return `agent:${resolveOpenClawAgentId()}:discord:voice:guild:${guildId}:channel:${channelId}:join:${randomUUID()}`;
+  return `${resolveHermesSessionPrefix()}:guild:${guildId}:channel:${channelId}:join:${randomUUID()}`;
 }
 
 export function createVoiceSession(
   guildId: string,
   channelId: string,
   discordUserId: string,
-  sessionRef: { sessionKey?: string | null; openClawSessionId?: string | null } = {},
+  sessionRef: { sessionKey?: string | null; hermesResponseId?: string | null } = {},
 ): VoiceSessionState {
   const session: VoiceSessionState = {
     channelId,
     createdAt: Date.now(),
     createdByUserId: discordUserId,
     sessionKey: sessionRef.sessionKey?.trim() || buildVoiceSessionKey(guildId, channelId),
-    openClawSessionId: sessionRef.openClawSessionId?.trim() || null,
+    hermesResponseId: sessionRef.hermesResponseId?.trim() || null,
     initializedAt: null,
     lastUsedAt: null,
     listenMode: 'slash',
@@ -67,7 +67,7 @@ export function createVoiceSession(
 
 export function markVoiceSessionUsed(
   guildId: string,
-  updates: { openClawSessionId?: string | null; sessionKey?: string | null; initialized?: boolean } = {},
+  updates: { hermesResponseId?: string | null; sessionKey?: string | null; initialized?: boolean } = {},
 ): VoiceSessionState | null {
   const session = activeSessionByGuild.get(guildId);
   if (!session) return null;
@@ -78,8 +78,8 @@ export function markVoiceSessionUsed(
     session.sessionKey = updates.sessionKey.trim();
   }
 
-  if (typeof updates.openClawSessionId === 'string' && updates.openClawSessionId.trim()) {
-    session.openClawSessionId = updates.openClawSessionId.trim();
+  if (typeof updates.hermesResponseId === 'string' && updates.hermesResponseId.trim()) {
+    session.hermesResponseId = updates.hermesResponseId.trim();
   }
 
   if (updates.initialized && !session.initializedAt) {

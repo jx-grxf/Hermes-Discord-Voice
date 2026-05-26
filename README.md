@@ -1,8 +1,8 @@
 <div align="center">
 
-# 🎙️ OpenClaw-Discord-Voice
+# 🎙️ Hermes-Discord-Voice
 
-**Experimental, self-hosted Discord voice bridge for OpenClaw**
+**Experimental, self-hosted Discord voice bridge for Hermes**
 
 ![TypeScript](https://img.shields.io/badge/TypeScript-5-blue?logo=typescript&logoColor=white)
 ![Node.js](https://img.shields.io/badge/Node.js-22%2B-339933?logo=node.js&logoColor=white)
@@ -15,7 +15,7 @@
 
 </div>
 
-OpenClaw-Discord-Voice connects a Discord voice channel to a local OpenClaw session: it captures one spoken turn, transcribes it locally, sends the transcript to OpenClaw, and plays the reply back into the channel.
+Hermes-Discord-Voice connects a Discord voice channel to a local Hermes session: it captures one spoken turn, transcribes it locally, sends the transcript to Hermes, and plays the reply back into the channel.
 
 It is built for self-hosted, personal, or small trusted setups, not as a polished hosted SaaS product.
 
@@ -44,9 +44,9 @@ It is built for self-hosted, personal, or small trusted setups, not as a polishe
 
 | | Feature |
 |---|---|
-| 🎙️ | Discord slash-command voice bridge for local OpenClaw sessions |
+| 🎙️ | Discord slash-command voice bridge for local Hermes sessions |
 | 🧠 | Local speech-to-text with Whisper CLI |
-| 🔊 | Switchable TTS: OpenClaw, Piper, macOS `say`, or ElevenLabs |
+| 🔊 | Switchable TTS: Hermes, Piper, macOS `say`, or ElevenLabs |
 | 🧵 | Optional verbose thread for tool calls and background execution details |
 | 🩺 | Built-in health check via `npm run doctor:bridge` and `/info` |
 | 🧪 | Debug helper `/debugtext` for text-only session testing |
@@ -56,7 +56,7 @@ It is built for self-hosted, personal, or small trusted setups, not as a polishe
 ## 🌍 Scope
 
 - **Self-hosted only**
-- **Environment-sensitive**: depends on local binaries, PATH, macOS runtime, Discord voice state, and your local OpenClaw setup
+- **Environment-sensitive**: depends on local binaries, PATH, macOS runtime, Discord voice state, and your local Hermes setup
 - **Best for trusted setups** rather than public multi-tenant hosting
 - **Live voice behavior still needs real smoke testing** in an actual Discord call
 
@@ -69,8 +69,8 @@ It is built for self-hosted, personal, or small trusted setups, not as a polishe
 | **Bot runtime** | Node.js 22+, TypeScript, Discord.js 14 |
 | **Voice pipeline** | Discord Voice, Opus decode, PCM → WAV via `ffmpeg` |
 | **Speech-to-text** | `whisper-cli` with local GGML models |
-| **OpenClaw bridge** | local `openclaw` CLI + gateway |
-| **Text-to-speech** | OpenClaw gateway TTS, Piper, macOS `say`, or ElevenLabs |
+| **Hermes bridge** | local `hermes` CLI by default, optional Hermes API server |
+| **Text-to-speech** | Piper, macOS `say`, ElevenLabs, or a custom Hermes TTS command |
 
 ---
 
@@ -78,13 +78,13 @@ It is built for self-hosted, personal, or small trusted setups, not as a polishe
 
 - **macOS**
 - **Node.js** `20+`
-- **openclaw**
+- **hermes**
 - **ffmpeg**
 - **whisper-cli**
 - Whisper model at `models/ggml-base.bin` or another configured path
 - Discord bot credentials for a single-guild setup
 
-If you are starting from scratch, install and verify OpenClaw first. This bridge assumes OpenClaw is already healthy locally before Discord is added on top.
+If you are starting from scratch, install and verify Hermes first. This bridge assumes Hermes is already healthy locally before Discord is added on top.
 
 ---
 
@@ -92,7 +92,7 @@ If you are starting from scratch, install and verify OpenClaw first. This bridge
 
 | Dependency | Required | Why it exists | Notes |
 |---|---|---|---|
-| `openclaw` | Yes | Backend session + agent execution | Must already work locally |
+| `hermes` | Yes | Backend session + agent execution | Must already work locally |
 | `ffmpeg` | Yes | PCM → WAV conversion | Checked by `doctor` |
 | `whisper-cli` | Yes | Local STT | Needs a compatible model file |
 | Whisper model | Yes | Speech recognition | Default is `models/ggml-base.bin` |
@@ -106,7 +106,7 @@ At startup the bot checks:
 
 - `DISCORD_TOKEN`
 - `DISCORD_GUILD_ID`
-- `openclaw`
+- `hermes`
 - `ffmpeg`
 - `whisper-cli`
 - the configured Whisper model path
@@ -115,15 +115,15 @@ Depending on `TTS_PROVIDER`, it also checks:
 
 - `say`, when `TTS_PROVIDER=say`
 - the configured Piper binary and model path, when `TTS_PROVIDER=piper`
-- OpenClaw gateway access, when `TTS_PROVIDER=openclaw`
+- `HERMES_TTS_COMMAND`, when `TTS_PROVIDER=hermes`
 
 ---
 
 ## 🚀 Quick Start
 
 ```bash
-git clone https://github.com/jx-grxf/OpenClaw-Discord-Voice.git
-cd OpenClaw-Discord-Voice
+git clone https://github.com/jx-grxf/Hermes-Discord-Voice.git
+cd Hermes-Discord-Voice
 brew install node
 npm install
 cp .env.example .env
@@ -133,9 +133,9 @@ npm run dev
 
 This quick start only works if these are already true:
 
-- a working local `openclaw` installation
+- a working local `hermes` installation
 - Node.js `>=22.12.0`
-- `ffmpeg`, `whisper-cli`, and either OpenClaw TTS, Piper, macOS `say`, or ElevenLabs
+- `ffmpeg`, `whisper-cli`, and either Hermes TTS, Piper, macOS `say`, or ElevenLabs
 - a Whisper model file in `models/`
 - valid `DISCORD_TOKEN` and `DISCORD_GUILD_ID` values in `.env`
 
@@ -156,13 +156,26 @@ More details:
 |---|---|
 | `DISCORD_TOKEN` | Bot token |
 | `DISCORD_GUILD_ID` | Guild where slash commands are registered |
-| `OPENCLAW_VOICE_AGENT_ID` | Dedicated OpenClaw voice agent namespace, default `discord-voice`; keep it separate from `main` so heartbeats cannot bleed into voice replies |
+
+### Hermes Backend
+
+| Variable | Purpose |
+|---|---|
+| `HERMES_TRANSPORT` | `cli` by default; set `api` to use the local Hermes API server |
+| `HERMES_CLI` | Hermes executable, default `hermes` |
+| `HERMES_PROVIDER` | Optional provider override passed to Hermes CLI |
+| `HERMES_MODEL` | Optional model override for Hermes CLI/API |
+| `HERMES_TOOLSETS` | Optional comma-separated Hermes toolsets |
+| `HERMES_SKILLS` | Optional comma-separated Hermes skills |
+| `HERMES_VOICE_SESSION_PREFIX` | Prefix for fresh per-join conversations, default `hermes-discord-voice` |
+| `HERMES_API_BASE_URL` | Default `http://127.0.0.1:8642/v1` |
+| `HERMES_API_KEY` | Required when `HERMES_TRANSPORT=api` |
 
 ### Voice and TTS
 
 | Variable | Purpose |
 |---|---|
-| `TTS_PROVIDER` | `openclaw`, `piper`, `say`, or `elevenlabs`; `.env.example` starts with `piper`, code fallback is `say` |
+| `TTS_PROVIDER` | `hermes`, `piper`, `say`, or `elevenlabs`; `.env.example` starts with `piper`, code fallback is `say` |
 | `TTS_VOICE` | macOS `say` voice, default `Flo` |
 | `TTS_RATE` | macOS `say` rate, default `220` |
 | `PIPER_BINARY_PATH` | Piper runner path, default `tools/piper-venv/bin/python` |
@@ -198,9 +211,9 @@ More details:
 
 | Command | Description |
 |---|---|
-| `/join` | Join your current voice channel and prepare or reuse the active OpenClaw voice session |
-| `/listen` | Capture one spoken turn and send it to OpenClaw |
-| `/leave` | Disconnect the bot and request OpenClaw session cleanup |
+| `/join` | Join your current voice channel and prepare or reuse the active Hermes voice session |
+| `/listen` | Capture one spoken turn and send it to Hermes |
+| `/leave` | Disconnect the bot and clear the local voice session reference |
 | `/voice-verbose` | Enable a separate Discord thread for tool calls and background execution details |
 | `/debugtext` | Send plain text directly into the active voice session for debugging |
 | `/info` | Show diagnostics, session state, talk mode, TTS, and bridge status |
@@ -230,10 +243,10 @@ Use this to verify a real end-to-end setup after `doctor` passes:
 2. Run `npm run dev`
 3. In Discord, run `/info` and confirm env/binaries/model are healthy
 4. Join a voice channel and run `/join`
-5. Confirm the embed shows a session key and session id
+5. Confirm the embed shows a fresh Hermes conversation key
 6. Run `/listen`, wait for the prompt, then speak one short sentence
-7. Confirm the bot posts your transcript and an OpenClaw reply
-8. Switch TTS inside `/join` if you want to compare `OpenClaw`, `Piper`, `Say`, or `ElevenLabs`
+7. Confirm the bot posts your transcript and an Hermes reply
+8. Switch TTS inside `/join` if you want to compare `Hermes`, `Piper`, `Say`, or `ElevenLabs`
 9. Run `/leave` and confirm the bot disconnects cleanly
 
 ---
@@ -253,8 +266,8 @@ It does **not** validate:
 
 - live Discord voice receive in your current channel
 - Discord permissions/mute/deafen/runtime state
-- whether OpenClaw tool calls will succeed for a specific prompt
-- whether cleanup will succeed for every local gateway/session edge case
+- whether Hermes tool calls will succeed for a specific prompt
+- whether Hermes tool calls will succeed for a specific prompt
 
 That is why the manual smoke test still matters.
 
@@ -267,7 +280,7 @@ That is why the manual smoke test still matters.
 3. Decode Opus to PCM
 4. Convert PCM to WAV with `ffmpeg`
 5. Transcribe WAV with `whisper-cli`
-6. Send the transcript to OpenClaw with the active voice `sessionKey`
+6. Send the transcript to Hermes with the active voice conversation key
 7. Generate speech with the selected TTS provider and play it back in Discord
 
 ---
@@ -275,18 +288,18 @@ That is why the manual smoke test still matters.
 ## 🔄 Session Behavior
 
 - The bridge keeps **one active voice session per guild** while the bot stays connected.
-- `/join` creates or reuses the active OpenClaw voice session for that voice connection.
+- `/join` creates a fresh Hermes conversation key for that voice connection.
 - `/listen` reuses that session for follow-up turns until `/leave`.
-- `/leave` disconnects the bot and asks OpenClaw to delete/archive the session.
-- Whether the session still appears inside `openclaw sessions` depends on the local OpenClaw runtime and cleanup success, not just the Discord bridge.
+- `/leave` disconnects the bot and clears the bridge's in-memory voice session reference.
+- Hermes CLI/API may keep its own session history under `~/.hermes`; this bridge does not delete it.
 
 ---
 
 ## ⚠️ Known Limitations
 
 - `say` is **macOS-only**
-- OpenClaw TTS delegates synthesis to the running OpenClaw gateway
+- `TTS_PROVIDER=hermes` delegates synthesis to a custom local command configured with `HERMES_TTS_COMMAND`
 - Piper is local and free, but you still need the model + Python environment installed
 - Discord voice receive is sensitive to real runtime conditions such as mute/deafen state, permissions, push-to-talk, and who is speaking
-- Session continuity still depends on what the local OpenClaw runtime returns
+- Session continuity still depends on what the local Hermes runtime returns
 - End-to-end validation is still primarily a **manual live Discord smoke test**

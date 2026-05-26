@@ -3,9 +3,10 @@ import https from 'node:https';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { getConfiguredTtsProvider, getPiperBinaryPath, getPiperModelPath } from './tts-config.js';
+import { checkHermesApiHealth } from './hermes.js';
 
 export const REQUIRED_ENV_VARS = ['DISCORD_TOKEN', 'DISCORD_GUILD_ID'] as const;
-export const BASE_REQUIRED_BINARIES = ['openclaw', 'ffmpeg', 'whisper-cli'] as const;
+export const BASE_REQUIRED_BINARIES = ['hermes', 'ffmpeg', 'whisper-cli'] as const;
 
 export type HealthCheck = {
   name: string;
@@ -17,6 +18,7 @@ export type BridgeHealth = {
   env: HealthCheck[];
   binaries: HealthCheck[];
   whisperModel: HealthCheck;
+  hermesApi?: HealthCheck;
 };
 
 export function getWhisperModelPath(): string {
@@ -55,6 +57,13 @@ export function collectBridgeHealth(env: NodeJS.ProcessEnv = process.env): Bridg
       detail: env.ELEVENLABS_VOICE_ID ? 'set' : 'missing',
     });
   }
+  if (provider === 'hermes') {
+    envChecks.push({
+      name: 'HERMES_TTS_COMMAND',
+      ok: Boolean(env.HERMES_TTS_COMMAND),
+      detail: env.HERMES_TTS_COMMAND ? 'set' : 'missing',
+    });
+  }
 
   const requiredBinaries = [...BASE_REQUIRED_BINARIES, ...(provider === 'say' ? ['say'] : [])];
   const binaryChecks = requiredBinaries.map((name) => checkBinary(name));
@@ -87,6 +96,17 @@ export function collectBridgeHealth(env: NodeJS.ProcessEnv = process.env): Bridg
     env: envChecks,
     binaries: piperModel ? [...binaryChecks, piperModel] : binaryChecks,
     whisperModel,
+  };
+}
+
+export async function collectHermesApiHealth(env: NodeJS.ProcessEnv = process.env): Promise<HealthCheck | null> {
+  const transport = env.HERMES_TRANSPORT?.trim().toLowerCase();
+  if (transport !== 'api' && !env.HERMES_API_KEY?.trim()) return null;
+  const health = await checkHermesApiHealth();
+  return {
+    name: 'Hermes API',
+    ok: health.ok,
+    detail: health.detail,
   };
 }
 
@@ -128,7 +148,9 @@ export function checkDiscordBotAuth(token: string): Promise<HealthCheck> {
 }
 
 export function summarizeHealthIssues(health: BridgeHealth): string[] {
-  return [...health.env, ...health.binaries, health.whisperModel].filter((item) => !item.ok).map((item) => `${item.name}: ${item.detail}`);
+  return [...health.env, ...health.binaries, health.whisperModel, ...(health.hermesApi ? [health.hermesApi] : [])]
+    .filter((item) => !item.ok)
+    .map((item) => `${item.name}: ${item.detail}`);
 }
 
 export function assertStartupReadiness(env: NodeJS.ProcessEnv = process.env): void {

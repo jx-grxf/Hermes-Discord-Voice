@@ -30,7 +30,7 @@ function findExternalNode() {
     .filter(Boolean)
     .map((directory) => path.join(directory, 'node'));
   const candidates = [
-    process.env.OPENCLAW_NODE,
+    process.env.HERMES_NODE,
     ...pathCandidates,
     '/opt/homebrew/bin/node',
     '/usr/local/bin/node',
@@ -50,7 +50,7 @@ function shouldPreferExternalNode() {
 }
 
 const externalNode = findExternalNode();
-const shouldUseExternalNode = Boolean(process.env.OPENCLAW_NODE) || shouldPreferExternalNode();
+const shouldUseExternalNode = Boolean(process.env.HERMES_NODE) || shouldPreferExternalNode();
 const selectedNode = shouldUseExternalNode ? externalNode : null;
 const env = { ...process.env };
 

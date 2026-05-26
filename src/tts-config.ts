@@ -10,7 +10,7 @@ export function resolveConfiguredPath(configured: string | undefined, defaultSeg
 
 export function getConfiguredTtsProvider(env: NodeJS.ProcessEnv = process.env): TtsProvider {
   const provider = env.TTS_PROVIDER?.trim().toLowerCase();
-  if (provider === 'openclaw') return 'openclaw';
+  if (provider === 'hermes') return 'hermes';
   if (provider === 'elevenlabs') return 'elevenlabs';
   if (provider === 'piper') return 'piper';
   return 'say';

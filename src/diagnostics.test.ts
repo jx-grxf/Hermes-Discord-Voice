@@ -49,15 +49,16 @@ test('collectBridgeHealth checks Piper binary and model when provider is piper',
   assert.equal(issues.some((issue) => issue.startsWith('Piper model:')), true);
 });
 
-test('collectBridgeHealth treats OpenClaw TTS as gateway-backed', () => {
+test('collectBridgeHealth requires a command for Hermes TTS', () => {
   const health = collectBridgeHealth({
     DISCORD_TOKEN: 'token',
     DISCORD_GUILD_ID: 'guild',
-    TTS_PROVIDER: 'openclaw',
+    TTS_PROVIDER: 'hermes',
   });
   const issues = summarizeHealthIssues(health);
 
   assert.equal(issues.some((issue) => issue.startsWith('say:')), false);
   assert.equal(issues.some((issue) => issue.startsWith('piper:')), false);
   assert.equal(issues.some((issue) => issue.startsWith('ELEVENLABS_API_KEY:')), false);
+  assert.equal(issues.some((issue) => issue.startsWith('HERMES_TTS_COMMAND:')), true);
 });

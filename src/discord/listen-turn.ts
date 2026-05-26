@@ -23,7 +23,7 @@ import {
   summarizeSessionId,
   summarizeSessionKey,
 } from './helpers.js';
-import { runOpenClawTurnWithOptionalVerbose } from './verbose.js';
+import { runHermesTurnWithOptionalVerbose } from './verbose.js';
 
 export type ListenExecutionContext = {
   guildId: string;
@@ -144,7 +144,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
           opusPackets: receivedOpusPackets,
           opusBytes: receivedOpusBytes,
           pcmBytes: receivedPcmBytes,
-          hasOpenClawSessionId: Boolean(session.openClawSessionId),
+          hasHermesResponseId: Boolean(session.hermesResponseId),
           sessionKey: session.sessionKey,
         }),
       });
@@ -219,7 +219,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
         channelId: connection.joinConfig.channelId,
         speakingStarted,
         ssrcMapped,
-        hasOpenClawSessionId: Boolean(session.openClawSessionId),
+        hasHermesResponseId: Boolean(session.hermesResponseId),
         sessionKey: session.sessionKey,
       }),
       botReadyForReceive: Boolean(botMember.voice?.channelId) && botMember.voice?.selfDeaf === false,
@@ -342,7 +342,7 @@ export async function runListenTurn(context: ListenExecutionContext) {
             speakingStarted,
             ssrcMapped,
             transcriptLength: transcript.length,
-            hasOpenClawSessionId: Boolean(session.openClawSessionId),
+            hasHermesResponseId: Boolean(session.hermesResponseId),
             sessionKey: session.sessionKey,
           }),
           durationMs: Date.now() - transcriptionStartedAt,
@@ -351,22 +351,22 @@ export async function runListenTurn(context: ListenExecutionContext) {
           throw new Error('Audio arrived, but Whisper could not recognize any speech. Try speaking more clearly or a little louder.');
         }
 
-        const openClawStartedAt = Date.now();
-        const openClawResult = await runOpenClawTurnWithOptionalVerbose({
+        const hermesStartedAt = Date.now();
+        const hermesResult = await runHermesTurnWithOptionalVerbose({
           guildId,
           guild,
           session,
           transcript,
           logPrefix,
         });
-        log('OpenClaw turn finished', {
-          sessionKeyPreview: redactSessionKey(openClawResult.sessionKey),
-          hasOpenClawSessionId: Boolean(openClawResult.sessionId),
-          durationMs: Date.now() - openClawStartedAt,
+        log('Hermes turn finished', {
+          sessionKeyPreview: redactSessionKey(hermesResult.sessionKey),
+          hasHermesResponseId: Boolean(hermesResult.responseId),
+          durationMs: Date.now() - hermesStartedAt,
         });
 
         const ttsStartedAt = Date.now();
-        await synthesizeSpeech(openClawResult.reply, ttsPath, session.ttsProvider);
+        await synthesizeSpeech(hermesResult.reply, ttsPath, session.ttsProvider);
         log('TTS synthesis finished', { ttsPath, durationMs: Date.now() - ttsStartedAt, provider: session.ttsProvider });
         setVoiceSessionBotSpeaking(guildId, true);
         const playbackStartedAt = Date.now();
@@ -375,8 +375,8 @@ export async function runListenTurn(context: ListenExecutionContext) {
         log('Reply playback finished', { durationMs: Date.now() - playbackStartedAt });
         markVoiceSessionUsed(guildId, {
           initialized: true,
-          sessionKey: openClawResult.sessionKey,
-          openClawSessionId: openClawResult.sessionId,
+          sessionKey: hermesResult.sessionKey,
+          hermesResponseId: hermesResult.responseId,
         });
 
         completed = true;
@@ -395,18 +395,18 @@ export async function runListenTurn(context: ListenExecutionContext) {
               inline: false,
             },
             {
-              name: 'OpenClaw replied',
-              value: fitEmbedFieldValue(openClawResult.reply),
+              name: 'Hermes replied',
+              value: fitEmbedFieldValue(hermesResult.reply),
               inline: false,
             },
             {
               name: 'Session key',
-              value: summarizeSessionKey(openClawResult.sessionKey),
+              value: summarizeSessionKey(hermesResult.sessionKey),
               inline: false,
             },
             {
               name: 'Session id',
-              value: summarizeSessionId(openClawResult.sessionId),
+              value: summarizeSessionId(hermesResult.responseId),
               inline: false,
             },
             {

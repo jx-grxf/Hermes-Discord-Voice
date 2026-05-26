@@ -1,10 +1,10 @@
 {
-  "name": "OpenClaw-Discord-Voice",
-  "version": "1.0.4",
-  "description": "Discord voice bridge for OpenClaw with local Whisper STT and macOS TTS",
+  "name": "hermes-discord-voice",
+  "version": "0.1.0",
+  "description": "Discord voice bridge for Hermes Agent with local Whisper STT and switchable TTS",
   "main": "dist/index.js",
   "bin": {
-    "ocvoice": "bin/ocvoice"
+    "hermesvoice": "bin/hermesvoice"
   },
   "scripts": {
     "dev": "node scripts/run-with-project-node.cjs tsx src/index.ts",
@@ -18,7 +18,7 @@
     "npm": ">=10"
   },
   "keywords": [
-    "openclaw",
+    "hermes",
     "discord",
     "voice",
     "whisper",
@@ -29,12 +29,12 @@
   "type": "commonjs",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/jx-grxf/OpenClaw-Discord-Voice.git"
+    "url": "git+https://github.com/jx-grxf/Hermes-Discord-Voice.git"
   },
   "bugs": {
-    "url": "https://github.com/jx-grxf/OpenClaw-Discord-Voice/issues"
+    "url": "https://github.com/jx-grxf/Hermes-Discord-Voice/issues"
   },
-  "homepage": "https://github.com/jx-grxf/OpenClaw-Discord-Voice#readme",
+  "homepage": "https://github.com/jx-grxf/Hermes-Discord-Voice#readme",
   "dependencies": {
     "@discordjs/voice": "^0.19.2",
     "@snazzah/davey": "^0.1.11",

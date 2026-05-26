@@ -16,7 +16,6 @@ import {
   handleVoiceVerboseButton,
 } from './discord/handlers.js';
 import { handleHelpButton, handleHelpCommand } from './discord/help.js';
-import { deleteOpenClawSessionWithRetry } from './openclaw.js';
 import { clearAllVoiceState, listVoiceSessions } from './state.js';
 
 dotenv.config({ override: true, quiet: true });
@@ -46,7 +45,7 @@ const commands = [
   new SlashCommandBuilder().setName('voice-verbose').setDescription('Configure verbose tool/thread streaming for the active voice session'),
   new SlashCommandBuilder()
     .setName('debugtext')
-    .setDescription('Send text directly to the active OpenClaw voice session')
+    .setDescription('Send text directly to the active Hermes voice session')
     .addStringOption((option) =>
       option
         .setName('text')
@@ -97,7 +96,7 @@ function acquireBotLock() {
       const raw = fs.readFileSync(LOCK_FILE, 'utf8').trim();
       const existingPid = Number(raw);
       if (Number.isFinite(existingPid) && existingPid > 0 && pidExists(existingPid)) {
-        console.error(`Another OpenClaw-Discord-Voice process is already running (pid ${existingPid}). Stop it before starting a new one.`);
+        console.error(`Another Hermes-Discord-Voice process is already running (pid ${existingPid}). Stop it before starting a new one.`);
         process.exit(1);
       }
       fs.rmSync(LOCK_FILE, { force: true });
@@ -148,22 +147,7 @@ async function gracefulShutdown(signal: NodeJS.Signals | 'UNCAUGHT_EXCEPTION' | 
   try {
     const sessions = listVoiceSessions();
     if (sessions.length > 0) {
-      console.log('Cleaning up OpenClaw sessions during shutdown', { sessionCount: sessions.length });
-      await Promise.allSettled(
-        sessions.map(({ guildId, session }) =>
-          deleteOpenClawSessionWithRetry(session.sessionKey, {
-            attempts: 1,
-            timeoutMs: 5_000,
-            backoffMs: 250,
-          }).catch((error) => {
-            console.error('Failed to clean up OpenClaw session during shutdown', {
-              guildId,
-              sessionKey: session.sessionKey,
-              error,
-            });
-          }),
-        ),
-      );
+      console.log('Clearing Hermes voice session references during shutdown', { sessionCount: sessions.length });
     }
     destroyAllVoiceConnections();
     clearAllVoiceState();
