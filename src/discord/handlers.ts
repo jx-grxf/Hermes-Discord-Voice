@@ -67,6 +67,7 @@ type AutoListenController = {
   triggerActive: boolean;
   playbackAbortController: AbortController | null;
   statusMessage: Message | null;
+  pendingAutoInterruptTimer: NodeJS.Timeout | null;
 };
 type VoiceRunPhase = 'thinking' | 'synthesizing' | 'playing';
 type ActiveVoiceRun = {
@@ -79,6 +80,12 @@ type ActiveVoiceRun = {
 
 const autoListenControllers = new Map<string, AutoListenController>();
 const activeVoiceRuns = new Map<string, ActiveVoiceRun>();
+
+export function getAutoInterruptMinSpeechMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = Number(env.VOICE_AUTO_INTERRUPT_MIN_SPEECH_MS ?? '');
+  if (!Number.isFinite(raw) || raw <= 0) return 750;
+  return Math.min(Math.max(Math.floor(raw), 250), 5_000);
+}
 
 function beginActiveVoiceRun(guildId: string, source: string): ActiveVoiceRun {
   activeVoiceRuns.get(guildId)?.abortController.abort();
@@ -112,6 +119,9 @@ function disposeAutoListen(guildId: string) {
   const controller = autoListenControllers.get(guildId);
   if (!controller) return;
   stopActiveVoiceRun(guildId);
+  if (controller.pendingAutoInterruptTimer) {
+    clearTimeout(controller.pendingAutoInterruptTimer);
+  }
   controller.playbackAbortController?.abort();
   controller.dispose();
   autoListenControllers.delete(guildId);
@@ -610,6 +620,13 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
     triggerActive: false,
     playbackAbortController: null,
     statusMessage: null,
+    pendingAutoInterruptTimer: null,
+  };
+
+  const clearPendingAutoInterrupt = () => {
+    if (!controller.pendingAutoInterruptTimer) return;
+    clearTimeout(controller.pendingAutoInterruptTimer);
+    controller.pendingAutoInterruptTimer = null;
   };
 
   const upsertAutoModeMessage = async (payload: { embed?: EmbedBuilder; content?: string }) => {
@@ -641,13 +658,20 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
     if (!session || session.listenMode !== 'auto') return;
     if (userId !== session.createdByUserId) return;
     if (session.botSpeaking) {
-      if (interruptAutoPlayback(guildId) === 'interrupted') {
-        void upsertAutoModeMessage({
-          content: 'Interrupted current playback. Speak again when the bot is idle.',
-        });
-      }
+      if (controller.pendingAutoInterruptTimer) return;
+      controller.pendingAutoInterruptTimer = setTimeout(() => {
+        controller.pendingAutoInterruptTimer = null;
+        const currentSession = getVoiceSession(guildId);
+        if (!currentSession || currentSession.listenMode !== 'auto' || !currentSession.botSpeaking) return;
+        if (interruptAutoPlayback(guildId) === 'interrupted') {
+          void upsertAutoModeMessage({
+            content: 'Interrupted current playback. Speak again when the bot is idle.',
+          });
+        }
+      }, getAutoInterruptMinSpeechMs());
       return;
     }
+    clearPendingAutoInterrupt();
     if (controller.triggerActive || getActiveGuildListenUser(guildId)) return;
 
     controller.triggerActive = true;
@@ -679,14 +703,24 @@ function enableAutoListen(guildId: string, guild: NonNullable<ListenExecutionCon
         controller.triggerActive = false;
         controller.playbackAbortController = null;
         controller.statusMessage = null;
+        clearPendingAutoInterrupt();
         run.finish();
       });
   };
 
+  const onSpeakingEnd = (userId: string) => {
+    const session = getVoiceSession(guildId);
+    if (!session || userId !== session.createdByUserId) return;
+    clearPendingAutoInterrupt();
+  };
+
   receiver.speaking.on('start', onSpeakingStart);
+  receiver.speaking.on('end', onSpeakingEnd);
 
   controller.dispose = () => {
+    clearPendingAutoInterrupt();
     receiver.speaking.off('start', onSpeakingStart);
+    receiver.speaking.off('end', onSpeakingEnd);
   };
 
   autoListenControllers.set(guildId, controller);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { handleDebugText, handleJoin, handleStopVoice } from './handlers.js';
+import { getAutoInterruptMinSpeechMs, handleDebugText, handleJoin, handleStopVoice } from './handlers.js';
 
 test('handlers module exports join handler', () => {
   assert.equal(typeof handleJoin, 'function');
@@ -12,4 +12,11 @@ test('handlers module exports debug text handler', () => {
 
 test('handlers module exports stop voice handler', () => {
   assert.equal(typeof handleStopVoice, 'function');
+});
+
+test('auto interrupt speech threshold defaults and clamps', () => {
+  assert.equal(getAutoInterruptMinSpeechMs({}), 750);
+  assert.equal(getAutoInterruptMinSpeechMs({ VOICE_AUTO_INTERRUPT_MIN_SPEECH_MS: '100' }), 250);
+  assert.equal(getAutoInterruptMinSpeechMs({ VOICE_AUTO_INTERRUPT_MIN_SPEECH_MS: '900' }), 900);
+  assert.equal(getAutoInterruptMinSpeechMs({ VOICE_AUTO_INTERRUPT_MIN_SPEECH_MS: '9000' }), 5_000);
 });
