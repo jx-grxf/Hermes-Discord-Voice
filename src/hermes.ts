@@ -17,6 +17,11 @@ export type HermesTurnResult = {
   responseId: string | null;
 };
 
+type HermesRawResult = {
+  body: string;
+  responseId: string | null;
+};
+
 type HermesResponseApiPayload = {
   id?: string;
   response_id?: string;
@@ -141,6 +146,20 @@ export function extractHermesResponseId(raw: string): string | null {
   }
 }
 
+export function extractHermesCliSessionId(raw: string): string | null {
+  const match = raw.match(/(?:^|\n)\s*session_id:\s*([^\s]+)/i);
+  return match?.[1]?.trim() || null;
+}
+
+export function stripHermesCliMetadata(raw: string): string {
+  return raw
+    .split(/\r?\n/)
+    .filter((line) => !/^\s*session_id:\s*/i.test(line))
+    .filter((line) => !/^\s*↻ Resumed session\s+/u.test(line))
+    .join('\n')
+    .trim();
+}
+
 export function buildHermesSessionKey(guildId: string, channelId: string): string {
   const prefix = process.env.HERMES_VOICE_SESSION_PREFIX?.trim() || 'hermes-discord-voice';
   return `${prefix}:guild:${guildId}:channel:${channelId}:join:${randomUUID()}`;
@@ -153,13 +172,14 @@ export function createHermesSession(sessionKey: string): HermesBootstrapResult {
   };
 }
 
-function buildHermesCliArgs(message: string, session: HermesSessionRef): string[] {
-  const args = ['chat', '-q', message, '-Q', '--source', getHermesSource(), '--continue', session.sessionKey];
+export function buildHermesCliArgs(message: string, session: HermesSessionRef): string[] {
+  const args = ['chat', '-q', message, '-Q', '--source', getHermesSource()];
   const provider = process.env.HERMES_PROVIDER?.trim();
   const model = process.env.HERMES_MODEL?.trim();
   const toolsets = commaList(process.env.HERMES_TOOLSETS);
   const skills = commaList(process.env.HERMES_SKILLS);
 
+  if (session.responseId) args.push('--resume', session.responseId);
   if (provider) args.push('--provider', provider);
   if (model) args.push('--model', model);
   if (toolsets.length > 0) args.push('--toolsets', toolsets.join(','));
@@ -168,8 +188,8 @@ function buildHermesCliArgs(message: string, session: HermesSessionRef): string[
   return args;
 }
 
-function runHermesCli(message: string, session: HermesSessionRef): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
+function runHermesCli(message: string, session: HermesSessionRef): Promise<HermesRawResult> {
+  return new Promise<HermesRawResult>((resolve, reject) => {
     const proc = spawn(getHermesCli(), buildHermesCliArgs(message, session), {
       cwd: process.cwd(),
       env: process.env,
@@ -197,12 +217,15 @@ function runHermesCli(message: string, session: HermesSessionRef): Promise<strin
         reject(new Error(`Hermes CLI failed (exit ${code ?? 'unknown'}): ${(stderr || stdout).trim() || 'no additional details'}`));
         return;
       }
-      resolve(stdout);
+      resolve({
+        body: stripHermesCliMetadata(stdout),
+        responseId: extractHermesCliSessionId(`${stderr}\n${stdout}`) ?? session.responseId ?? null,
+      });
     });
   });
 }
 
-async function callHermesResponsesApi(message: string, session: HermesSessionRef): Promise<string> {
+async function callHermesResponsesApi(message: string, session: HermesSessionRef): Promise<HermesRawResult> {
   const key = process.env.HERMES_API_KEY?.trim();
   if (!key) {
     throw new Error('HERMES_API_KEY is required when HERMES_TRANSPORT=api.');
@@ -222,7 +245,6 @@ async function callHermesResponsesApi(message: string, session: HermesSessionRef
         model: getHermesModel(),
         input: message,
         conversation: session.sessionKey,
-        previous_response_id: session.responseId || undefined,
       }),
       signal: controller.signal,
     });
@@ -239,7 +261,10 @@ async function callHermesResponsesApi(message: string, session: HermesSessionRef
   if (!response.ok) {
     throw new Error(`Hermes API failed with status ${response.status}: ${text || 'no response body'}`);
   }
-  return text;
+  return {
+    body: text,
+    responseId: extractHermesResponseId(text) ?? session.responseId ?? null,
+  };
 }
 
 export async function askHermes(transcript: string, session: HermesSessionRef): Promise<HermesTurnResult> {
@@ -255,7 +280,7 @@ export async function askHermes(transcript: string, session: HermesSessionRef): 
   const raw = getHermesTransport() === 'api'
     ? await callHermesResponsesApi(message, session)
     : await runHermesCli(message, session);
-  const reply = extractHermesReply(raw);
+  const reply = extractHermesReply(raw.body);
   if (!reply) {
     throw new Error('Hermes returned no usable reply.');
   }
@@ -263,7 +288,7 @@ export async function askHermes(transcript: string, session: HermesSessionRef): 
   return {
     reply,
     sessionKey: session.sessionKey,
-    responseId: extractHermesResponseId(raw) ?? session.responseId ?? null,
+    responseId: raw.responseId,
   };
 }
 
